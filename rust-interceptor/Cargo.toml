@@ -1,0 +1,24 @@
+[package]
+name = "vp-fms-interceptor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
+bytes = "1"
+rdkafka = { version = "0.36", features = ["cmake-build", "libz"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Deliberately NOT panic = "abort". A panic in one connection task must kill that
+# connection, not take down the process and every other in-flight authorization.

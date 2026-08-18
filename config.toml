@@ -1,0 +1,123 @@
+# VP -> FMS TCP interceptor.
+#
+# Design rule encoded in this file: nothing under [kafka] or [tee] is allowed to
+# affect the VP<->FMS path. Tuning them wrong costs you observability, never
+# availability.
+
+[listen]
+# Point VP at this address instead of at FMS directly.
+addr = "0.0.0.0:9100"
+# Hard cap on concurrent VP connections. Excess connections are accepted and
+# closed immediately rather than queued, so VP sees a fast failure.
+max_connections = 4096
+
+[upstream]
+# The real FMS endpoint.
+addr = "127.0.0.1:8583"
+connect_timeout_ms = 3000
+
+[proxy]
+read_buffer_bytes = 16384
+# TCP_NODELAY on both sockets. Leave this on: Nagle can add ~40ms to small
+# ISO 8583 messages, which dwarfs everything else this program does.
+nodelay = true
+# Close an idle connection after this long. 0 disables.
+idle_timeout_ms = 0
+
+[tee]
+# Number of framing/publish workers. Connections are assigned conn_id % shards,
+# so each worker owns its framer state without locking.
+shards = 4
+# Per-shard bounded queue. When full, frames are DROPPED and counted.
+# This bound is the isolation boundary between Kafka and the hot path.
+queue_capacity = 8192
+# vp_to_fms | fms_to_vp | both
+publish_directions = "both"
+
+[framing]
+# length_prefix | raw
+#   length_prefix -> reassemble whole messages (what you want for ISO 8583)
+#   raw           -> publish socket reads as-is, no reassembly
+mode = "length_prefix"
+prefix_bytes = 2          # 2 or 4
+big_endian = true
+length_includes_prefix = false
+max_frame_bytes = 65536   # a frame larger than this means we are desynced
+
+# Per-connection timing. Measured on the tee workers from timestamps taken as
+# frames are reassembled, so it never touches the forwarding path.
+#
+# Adds to each Kafka envelope:
+#   conn_age_ms -- ms since this connection was accepted
+#   gap_ms      -- ms since the previous frame on this connection (either direction)
+#   rtt_ms      -- request->response time, on fms_to_vp frames only
+[timing]
+enabled = true
+# Pair each request with the next response on the same connection.
+#
+# ASSUMES responses come back in request order. True for a strict
+# request/response link. If VP pipelines AND FMS may answer out of order, the
+# rtt_ms values get mismatched -- set this false and rely on gap_ms instead.
+pair_request_response = true
+# Cap on outstanding unmatched requests per connection. Prevents unbounded
+# growth when responses stop arriving; overflow increments rtt_unmatched.
+max_pending = 256
+
+# Optional field extraction for the Kafka envelope. Runs on the tee workers, so
+# it cannot affect VP<->FMS latency, and a parse failure never suppresses the
+# publish -- the frame goes out with a `parse_error` field instead.
+[parse]
+# none | key_value
+#   key_value -> "accountName=Zacky,accountNumber=11020134353,bankCode=1234"
+#                becomes {"accountName":"Zacky","accountNumber":"11020134353",
+#                         "bankCode":"1234"} under the envelope's `fields` key
+#
+# SET TO none BECAUSE THIS LINK CARRIES ISO 8583, NOT key=value.
+# The parser is deliberately literal: it splits on the delimiters without
+# validating anything. On an ISO 8583 frame that fails in the worse of the two
+# possible ways --
+#   0800/0810 have no '=' at all, so you get an honest parse_error;
+#   0200/0420 contain '=' inside DE 35 (track 2), so the parser SUCCEEDS,
+#     emits one field with a ~130-character key of garbage, and reports
+#     parse_error: null.
+# The messages carrying the PAN are the ones that fail silently. Leaving this
+# on means `fields` is nonsense and `parse_error: null` cannot be trusted.
+#
+# `payload` is unaffected either way -- it is the byte-identical frame, and
+# examples/iso8583.py decodes it per EIS_FMS_ISO8583_jPOS_Packager.xml.
+# For real field extraction, see RUNBOOK.md section 10.
+mode = "none"
+pair_delimiter = ","
+kv_delimiter = "="
+trim = true
+max_fields = 64
+
+[kafka]
+enabled = true
+brokers = "localhost:9092"
+topic = "vp.fms.iso8583"
+# json -> {"conn_id":..,"direction":..,"seq":..,"peer":..,"ts_ms":..,
+#          "length":..,"encoding":..,"payload":".."}
+# raw  -> the reassembled frame byte-for-byte, metadata in Kafka headers only
+value_format = "json"
+# How the frame is represented inside the JSON envelope.
+#   base64 -> safe for binary ISO 8583 (default)
+#   hex    -> traditional ISO 8583 dump format, easier to read against a spec
+#   utf8   -> text protocols ONLY; lossy on binary, do not use for evidence
+payload_encoding = "base64"
+# Fire-and-forget settings. acks=1 and a short message timeout mean a struggling
+# broker sheds load quickly instead of backing up in memory.
+acks = "1"
+compression = "lz4"
+linger_ms = 5
+message_timeout_ms = 5000
+queue_buffering_max_messages = 100000
+queue_buffering_max_kbytes = 262144
+# Extra librdkafka properties passed through verbatim (SASL/TLS, etc).
+[kafka.properties]
+# "security.protocol" = "SASL_SSL"
+# "sasl.mechanisms" = "PLAIN"
+
+[admin]
+# Prometheus text format on /metrics, JSON on /, liveness on /healthz.
+addr = "127.0.0.1:9101"

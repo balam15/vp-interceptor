@@ -1,0 +1,49 @@
+# Deliberately starved config, used to prove the drop path actually engages.
+#
+# One shard, a one-slot queue. Under unthrottled load the shard worker cannot
+# keep up, `try_send` fails, and frames are dropped. The point of the test is
+# that VP<->FMS latency and integrity are UNCHANGED while that happens.
+#
+#   ./rust-interceptor/target/release/vp-fms-interceptor testkit/config.droptest.toml
+#   python3 vp_client.py --target 127.0.0.1:9200 --connections 16 --duration 10
+#   curl -s localhost:9201/metrics | grep tee_dropped
+#
+# Never use these values for anything else.
+
+[listen]
+addr = "127.0.0.1:9200"
+max_connections = 4096
+
+[upstream]
+addr = "127.0.0.1:8583"
+connect_timeout_ms = 3000
+
+[proxy]
+read_buffer_bytes = 16384
+nodelay = true
+
+[tee]
+shards = 1
+queue_capacity = 1
+publish_directions = "both"
+
+[framing]
+mode = "length_prefix"
+prefix_bytes = 2
+big_endian = true
+length_includes_prefix = false
+max_frame_bytes = 65536
+
+[kafka]
+enabled = true
+brokers = "localhost:9092"
+topic = "vp.fms.iso8583.droptest"
+acks = "1"
+compression = "lz4"
+linger_ms = 5
+message_timeout_ms = 5000
+queue_buffering_max_messages = 100000
+queue_buffering_max_kbytes = 262144
+
+[admin]
+addr = "127.0.0.1:9201"

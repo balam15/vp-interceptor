@@ -1,0 +1,375 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE isopackager PUBLIC
+        "-//jPOS/jPOS Generic Packager DTD 1.0//EN"
+        "http://jpos.org/dtd/generic-packager-1.0.dtd">
+
+<!--
+    EIS_FMS ISO8583 jPOS GenericPackager
+    Generated from the supplied EIS_FMS JSON configuration.
+
+    Notes:
+    - Message encoding: ASCII
+    - Bitmap: ASCII, 16 hex characters
+    - maxValidField: 127
+    - Composite fields: DE 3, 22, 43, 61
+    - Variable length indicators are ASCII:
+        LLVAR  = 2 ASCII length digits
+        LLLVAR = 3 ASCII length digits
+-->
+<isopackager maxValidField="127" bitmapField="1" emitBitmap="true">
+
+    <!-- MTI -->
+    <isofield
+        id="0"
+        length="4"
+        name="MESSAGETYPE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- ASCII bitmap: 16 hex characters -->
+    <isofield
+        id="1"
+        length="16"
+        name="BITMAP"
+        class="org.jpos.iso.IFA_BITMAP"/>
+
+    <!-- DE 2: PAN, LLVAR max 19 -->
+    <isofield
+        id="2"
+        length="19"
+        name="PAN"
+        class="org.jpos.iso.IFA_LLCHAR"/>
+
+    <!-- DE 3: Composite Processing Code / AKZ, fixed 6 -->
+    <isofieldpackager
+        id="3"
+        length="6"
+        name="AKZ"
+        class="org.jpos.iso.IFA_CHAR"
+        packager="org.jpos.iso.packager.GenericSubFieldPackager">
+
+        <isofield
+            id="1"
+            length="2"
+            name="TRANSACTION_TYPE"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="2"
+            length="2"
+            name="ACCOUNT_TYPE_FROM"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="3"
+            length="2"
+            name="ACCOUNT_TYPE_TO"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+    </isofieldpackager>
+
+    <!-- DE 4: Transaction Amount -->
+    <isofield
+        id="4"
+        length="12"
+        name="TRANSACTION_AMOUNT"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 6: Transaction Amount in IDR -->
+    <isofield
+        id="6"
+        length="12"
+        name="TRANSACTION_AMOUNT_IDR"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 7: MMddHHmmss GMT -->
+    <isofield
+        id="7"
+        length="10"
+        name="DATETIME"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 11: STAN / Transaction Number -->
+    <isofield
+        id="11"
+        length="6"
+        name="TRANSACTION_NUMBER"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 12: Local Time -->
+    <isofield
+        id="12"
+        length="6"
+        name="TIME"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 13: Local Date -->
+    <isofield
+        id="13"
+        length="4"
+        name="DATE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 15: Settlement Date -->
+    <isofield
+        id="15"
+        length="4"
+        name="SETTLEMENT_DATE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 18: Merchant Type -->
+    <isofield
+        id="18"
+        length="4"
+        name="MERCHANT_TYPE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 22: Composite POS Entry Mode, fixed 3 -->
+    <isofieldpackager
+        id="22"
+        length="3"
+        name="POSENTRYMODE"
+        class="org.jpos.iso.IFA_CHAR"
+        packager="org.jpos.iso.packager.GenericSubFieldPackager">
+
+        <isofield
+            id="1"
+            length="2"
+            name="PAN_ENTRY_MODE"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="2"
+            length="1"
+            name="PIN_ENTRY_CAPABILITY"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+    </isofieldpackager>
+
+    <!-- DE 28: Transaction Fee Amount -->
+    <isofield
+        id="28"
+        length="9"
+        name="TRANSACTION_AMOUNT_FEE"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 32: Acquiring Institution ID, LLVAR max 11 -->
+    <isofield
+        id="32"
+        length="11"
+        name="AQUIRING_INSTITUTAION_ID"
+        class="org.jpos.iso.IFA_LLCHAR"/>
+
+    <!-- DE 35: Track 2, LLVAR max 37 -->
+    <isofield
+        id="35"
+        length="37"
+        name="TRACK2"
+        class="org.jpos.iso.IFA_LLCHAR"/>
+
+    <!-- DE 37: RRN -->
+    <isofield
+        id="37"
+        length="12"
+        name="RRN"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 38: Authorization ID Response -->
+    <isofield
+        id="38"
+        length="6"
+        name="AUTHORIATION_ID_RESPONSE"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 39: Response Code -->
+    <isofield
+        id="39"
+        length="2"
+        name="RESPONSECODE"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 41: Terminal Data -->
+    <isofield
+        id="41"
+        length="16"
+        name="TERMINAL_DATA"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 42: Card Acceptor ID -->
+    <isofield
+        id="42"
+        length="15"
+        name="CARD_ACCEPTOR_ID"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 43: Composite Card Acceptor Name and Location, fixed 41 -->
+    <isofieldpackager
+        id="43"
+        length="41"
+        name="CARD_ACCEPTOR_NAME_AND_LOCATION"
+        class="org.jpos.iso.IFA_CHAR"
+        packager="org.jpos.iso.packager.GenericSubFieldPackager">
+
+        <isofield
+            id="1"
+            length="25"
+            name="NAME"
+            class="org.jpos.iso.IFA_CHAR"/>
+
+        <isofield
+            id="2"
+            length="10"
+            name="CITY"
+            class="org.jpos.iso.IFA_CHAR"/>
+
+        <isofield
+            id="3"
+            length="3"
+            name="STATE"
+            class="org.jpos.iso.IFA_CHAR"/>
+
+        <isofield
+            id="4"
+            length="3"
+            name="COUNTRY"
+            class="org.jpos.iso.IFA_CHAR"/>
+
+    </isofieldpackager>
+
+    <!-- DE 48: Additional Data, LLLVAR max 999 -->
+    <isofield
+        id="48"
+        length="999"
+        name="ADDITIONAL_DATA"
+        class="org.jpos.iso.IFA_LLLCHAR"/>
+
+    <!-- DE 49: Transaction Currency Code -->
+    <isofield
+        id="49"
+        length="3"
+        name="TRANSACTION_CURRENCY_CODE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 50: Beneficiary Currency Code -->
+    <isofield
+        id="50"
+        length="3"
+        name="BENEFICIARY_CURRENCY_CODE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 51: Issuer Currency Code -->
+    <isofield
+        id="51"
+        length="3"
+        name="ISSUER_CURRENCY_CODE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 61: Composite Reserved1, LLLVAR max 999 -->
+    <isofieldpackager
+        id="61"
+        length="999"
+        name="RESERVED1"
+        class="org.jpos.iso.IFA_LLLCHAR"
+        packager="org.jpos.iso.packager.GenericSubFieldPackager">
+
+        <isofield
+            id="1"
+            length="3"
+            name="SERVICE_CODE"
+            class="org.jpos.iso.IFA_CHAR"/>
+
+        <isofield
+            id="2"
+            length="1"
+            name="PIN_INDICATOR"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="3"
+            length="1"
+            name="CVV2_INDICATOR"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="4"
+            length="3"
+            name="ECI_INDICATOR"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="5"
+            length="1"
+            name="ASI_PREAUTH_FLAG"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+        <isofield
+            id="6"
+            length="1"
+            name="CVV2_RESULT_FLAG"
+            class="org.jpos.iso.IFA_NUMERIC"/>
+
+    </isofieldpackager>
+
+    <!-- DE 63: Reserved2, LLLVAR max 8 -->
+    <isofield
+        id="63"
+        length="8"
+        name="RESERVED2"
+        class="org.jpos.iso.IFA_LLLCHAR"/>
+
+    <!-- DE 70: Network Management Information Code -->
+    <isofield
+        id="70"
+        length="3"
+        name="NETWORK_MANAGEMENT_INFORMATION_CODE"
+        class="org.jpos.iso.IFA_NUMERIC"/>
+
+    <!-- DE 90: Original Data Element -->
+    <isofield
+        id="90"
+        length="42"
+        name="ORIGINAL_DATA_ELEMENT"
+        class="org.jpos.iso.IFA_CHAR"/>
+
+    <!-- DE 100: Issuer Identification Code, LLVAR max 11 -->
+    <isofield
+        id="100"
+        length="11"
+        name="ISSUER_IDENTIFICATION_CODE"
+        class="org.jpos.iso.IFA_LLNUM"/>
+
+    <!-- DE 102: From Account Number, LLVAR max 28 -->
+    <isofield
+        id="102"
+        length="28"
+        name="FROM_ACCOUNT_NUMBER"
+        class="org.jpos.iso.IFA_LLCHAR"/>
+
+    <!-- DE 103: Destination Account Number, LLVAR max 28 -->
+    <isofield
+        id="103"
+        length="28"
+        name="DESTINATION_ACCOUNT_NUMBER"
+        class="org.jpos.iso.IFA_LLCHAR"/>
+
+    <!-- DE 123: Card Type Code, LLLVAR max 255 -->
+    <isofield
+        id="123"
+        length="255"
+        name="CARD_TYPE_CODE"
+        class="org.jpos.iso.IFA_LLLCHAR"/>
+
+    <!-- DE 125: Transfer Indicator, LLLVAR max 255 -->
+    <isofield
+        id="125"
+        length="255"
+        name="TRANSFER_INDICATOR"
+        class="org.jpos.iso.IFA_LLLCHAR"/>
+
+    <!-- DE 127: Destination Institution Identification Code, LLLVAR max 255 -->
+    <isofield
+        id="127"
+        length="255"
+        name="DESTINATION_INSTITUTION_IDENTIFICATION_CODE"
+        class="org.jpos.iso.IFA_LLLCHAR"/>
+
+</isopackager>

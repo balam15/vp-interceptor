@@ -1,0 +1,40 @@
+# The build context for all three Dockerfiles is the PROJECT ROOT, so that each
+# image can bake in the shared config.toml. Everything below is either a build
+# artefact, a local tool, or something that must never end up in an image.
+#
+# Note what is deliberately NOT ignored: go-interceptor/vendor is required for
+# the Go image to build without network access.
+
+# Build artefacts
+rust-interceptor/target/
+java-interceptor/target/
+go-interceptor/bin/
+
+# VCS and editor noise
+.git/
+.gitignore
+.claude/
+**/.DS_Store
+
+# Python tooling and caches
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+
+# Local test output and benchmark data -- large, and irrelevant to a build
+benchmark/
+*.log
+
+# Docs. Kept out of the context so an edit to a README does not invalidate a
+# cached layer and trigger a full librdkafka rebuild.
+*.md
+**/*.md
+
+# Anything resembling a credential must never be copied into an image
+*.pem
+*.key
+*.p12
+*.jks
+.env
+.env.*
