@@ -55,9 +55,18 @@ RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca-cert; then \
     rm -f /tmp/extra-ca-cert
 
 # build-base gives gcc/g++/make/musl-dev; cmake builds librdkafka from source
-# (the `cmake-build` feature in Cargo.toml). zlib-static is needed because musl
-# targets link statically by default and the `libz` feature pulls zlib in.
-RUN apk add --no-cache build-base cmake perl pkgconf zlib-dev zlib-static
+# (the `cmake-build` feature in Cargo.toml).
+#
+# curl-dev is not optional: librdkafka 2.x includes curl unconditionally for
+# OAUTHBEARER/OIDC, and without the headers the cmake build fails on
+# `curl/curl.h: No such file or directory`. zlib-dev is the `libz` feature.
+RUN apk add --no-cache build-base cmake perl pkgconf zlib-dev curl-dev openssl-dev
+
+# Musl targets link statically by default, which would require a -static variant
+# of every C library in librdkafka's chain (curl -> nghttp2 -> brotli -> ...).
+# Linking dynamically against musl instead keeps the dependency list to the
+# handful of runtime packages installed in the final stage.
+ENV RUSTFLAGS="-C target-feature=-crt-static"
 
 WORKDIR /src
 
@@ -89,7 +98,10 @@ RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca-cert; then \
     fi; \
     rm -f /tmp/extra-ca-cert
 
-RUN adduser --system --uid 65532 --no-create-home interceptor
+# The shared libraries librdkafka links against, and the CA bundle it needs for
+# TLS to Kafka. Deliberately no -dev packages and no toolchain.
+RUN apk add --no-cache ca-certificates libcurl zlib openssl libgcc \
+    && adduser --system --uid 65532 --no-create-home interceptor
 
 COPY --from=build /src/target/release/vp-fms-interceptor /usr/local/bin/vp-fms-interceptor
 

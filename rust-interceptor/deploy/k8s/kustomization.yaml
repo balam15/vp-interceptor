@@ -1,0 +1,23 @@
+# oc apply -k .
+#
+# Generated set -- see README.md. Edit secret-config.yaml before applying:
+# [upstream] addr and [kafka] brokers are placeholders.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - serviceaccount.yaml
+  - secret-config.yaml
+  - service.yaml
+  - deployment.yaml
+  - pdb.yaml
+  - hpa.yaml
+
+# Set the namespace here rather than in each file, so one edit moves the whole
+# set. Must match the namespace in the FMS/Kafka addresses in secret-config.yaml.
+namespace: vp-listener
+
+images:
+  - name: vp-fms-interceptor
+    newName: image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
+    newTag: "0.1.0"

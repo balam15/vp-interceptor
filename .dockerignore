@@ -31,6 +31,11 @@ benchmark/
 *.md
 **/*.md
 
+# Kubernetes manifests and the Helm chart. Same reason as the docs above: the
+# image build has no use for them, and editing a template must not trigger a
+# full librdkafka rebuild.
+*/deploy/
+
 # Anything resembling a credential must never be copied into an image
 *.pem
 *.key

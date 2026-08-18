@@ -7,7 +7,15 @@ rust-version = "1.75"
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
 bytes = "1"
-rdkafka = { version = "0.36", features = ["cmake-build", "libz"] }
+# `ssl` is what makes TLS to Kafka possible. Without it librdkafka is configured
+# WITH_SSL=OFF regardless of which openssl packages the image installs, and
+# setting security.protocol=SSL then fails at producer creation with "OpenSSL
+# not available at build time". That failure is SILENT in operation: kafka.rs
+# logs it and continues without publishing, so VP<->FMS keeps working and every
+# probe stays green while nothing reaches the topic.
+# For SASL_SSL add "sasl" here, cyrus-sasl-dev to the build stage and
+# libsasl to the runtime stage of the Dockerfile.
+rdkafka = { version = "0.36", features = ["cmake-build", "libz", "ssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

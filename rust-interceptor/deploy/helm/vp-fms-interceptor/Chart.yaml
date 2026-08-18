@@ -1,0 +1,19 @@
+apiVersion: v2
+name: vp-fms-interceptor
+description: VP -> FMS ISO 8583 TCP interceptor that tees traffic to Kafka
+type: application
+
+# Chart version -- bump on every chart change.
+version: 0.1.0
+# Version of vp-fms-interceptor this chart deploys by default. Used as the image
+# tag when image.tag is left empty, so it must track Cargo.toml's package version.
+appVersion: "0.1.0"
+
+# autoscaling/v2 (HPA) and policy/v1 (PDB) both require 1.23+.
+kubeVersion: ">=1.23.0-0"
+
+keywords:
+  - iso8583
+  - tcp-proxy
+  - kafka
+home: https://maybankdigitalteam.visualstudio.com/VP%20Listener

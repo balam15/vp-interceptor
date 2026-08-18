@@ -1,0 +1,54 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} deployed as {{ include "vp-fms-interceptor.fullname" . }}.
+
+POINT VP AT THIS ADDRESS
+  {{ include "vp-fms-interceptor.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ include "vp-fms-interceptor.listenPort" . }}
+
+TRAFFIC PATH
+  VP -> :{{ include "vp-fms-interceptor.listenPort" . }} -> {{ .Values.config.upstream.addr }} (FMS)
+{{- if .Values.config.kafka.enabled }}
+  tee -> {{ .Values.config.kafka.brokers }} topic {{ .Values.config.kafka.topic }}
+{{- else }}
+  tee -> DISABLED (proxy-only mode; nothing is published to Kafka)
+{{- end }}
+
+CHECK IT CAME UP
+  oc rollout status deployment/{{ include "vp-fms-interceptor.fullname" . }} -n {{ .Release.Namespace }}
+  oc logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} --tail=20
+
+  Expect a line reading "interceptor ready" with listen, upstream and
+  max_connections. If the pods are in CrashLoopBackOff, the config failed to
+  parse -- the log line names the offending key.
+
+METRICS AND HEALTH
+{{- if .Values.service.exposeAdminPort }}
+  oc port-forward -n {{ .Release.Namespace }} svc/{{ include "vp-fms-interceptor.fullname" . }} {{ include "vp-fms-interceptor.adminPort" . }}:{{ include "vp-fms-interceptor.adminPort" . }}
+{{- else }}
+  oc port-forward -n {{ .Release.Namespace }} deploy/{{ include "vp-fms-interceptor.fullname" . }} {{ include "vp-fms-interceptor.adminPort" . }}:{{ include "vp-fms-interceptor.adminPort" . }}
+{{- end }}
+  curl -s localhost:{{ include "vp-fms-interceptor.adminPort" . }}/healthz
+  curl -s localhost:{{ include "vp-fms-interceptor.adminPort" . }}/metrics | grep vp_interceptor_
+
+WHAT THE PROBES WILL NOT TELL YOU
+  Both probes stay green while FMS is unreachable and while Kafka is down. That
+  is deliberate -- a dead dependency must not cascade into pod restarts. Watch
+  these counters instead:
+    vp_interceptor_upstream_connect_failed   FMS refusing or timing out
+    vp_interceptor_kafka_delivery_failed     broker rejecting or unreachable
+    vp_interceptor_tee_dropped               tee queue full, frames lost
+    vp_interceptor_framer_desyncs            framing config does not match the wire
+{{- if not .Values.config.kafka.enabled }}
+
+NOTE: Kafka is disabled. VP<->FMS traffic is forwarded normally but nothing is
+captured.
+{{- end }}
+{{- if .Values.service.exposeAdminPort }}
+
+NOTE: port {{ include "vp-fms-interceptor.adminPort" . }} is on the Service and has NO AUTH AND NO TLS. With no
+NetworkPolicy in this namespace it is reachable from anywhere in the cluster.
+Set service.exposeAdminPort=false to make it pod-only.
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+
+NOTE: autoscaling is on ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas). Existing VP connections do not
+rebalance onto new pods -- scale-out only affects newly established connections.
+{{- end }}

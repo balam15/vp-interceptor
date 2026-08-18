@@ -1,0 +1,184 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vp-fms-interceptor.fullname" . }}
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- /* When autoscaling is on, `replicas` is omitted entirely -- otherwise
+         every `helm upgrade` resets the count the HPA just chose, and the two
+         fight on a loop. */}}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "vp-fms-interceptor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # The process reads config.toml once at startup and has no reload path,
+        # so without this a config-only `helm upgrade` would change the Secret
+        # and leave every pod running the old settings.
+        checksum/config: {{ include "vp-fms-interceptor.configToml" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "vp-fms-interceptor.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "vp-fms-interceptor.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      # 30s connection drain + 5s Kafka flush (src/main.rs:68) plus the preStop
+      # pause. Too low and SIGKILL lands on live authorizations.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        # Deliberately NO runAsUser and NO fsGroup. OpenShift's restricted-v2 SCC
+        # assigns a UID from the namespace's range, and the image is already
+        # arbitrary-UID safe: the binary lives in /usr/local/bin, the config is
+        # world-readable, and nothing is ever written to disk.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: interceptor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The config path is argv[1] (src/main.rs:132). Any override of args
+          # must keep a path here, or the process falls back to ./config.toml in
+          # the working directory and exits non-zero.
+          args:
+            - /etc/vp-fms/config.toml
+          ports:
+            - name: tcp-vp
+              containerPort: {{ include "vp-fms-interceptor.listenPort" . | int }}
+              protocol: TCP
+            - name: http-admin
+              containerPort: {{ include "vp-fms-interceptor.adminPort" . | int }}
+              protocol: TCP
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+          {{- if .Values.probes.startup.enabled }}
+          # EVERY PROBE HITS THE ADMIN PORT, NEVER THE DATA PORT.
+          #
+          # A tcpSocket probe on 9100 looks like the obvious readiness check and
+          # is actively harmful here: the proxy dials FMS as soon as it accepts a
+          # connection (src/proxy.rs:70), so each probe opens and immediately
+          # drops a real upstream connection. That churns one FMS connection per
+          # pod per probe interval and increments upstream_connect_failed --
+          # the very counter the runbook tells you to alert on.
+          #
+          # Probing the admin port loses nothing: a failure to bind 9100 is fatal
+          # at startup (src/main.rs:210), so a process that is alive at all has
+          # the data port bound.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          # Restarts the pod only if the admin task is gone. Stays green when
+          # FMS or Kafka is down -- see the probes note in values.yaml.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          # Admin port, for the reason spelled out on startupProbe above.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal is asynchronous. Without this pause the pod
+                # can still be handed new connections after SIGTERM has already
+                # put it into drain, and those get refused.
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The process opens exactly one file -- the config -- and writes
+            # nothing; logs go to stdout.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vp-fms
+              readOnly: true
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+              {{- with .Values.persistence.subPath }}
+              subPath: {{ . }}
+              {{- end }}
+              readOnly: {{ .Values.persistence.readOnly }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "vp-fms-interceptor.fullname" . }}-config
+            # 0444 and not something tighter: a Secret volume is owned by
+            # root, and OpenShift runs this container as an arbitrary
+            # non-root UID from the namespace range, which is in neither the
+            # owning user nor the owning group. 0440 would make the config
+            # unreadable and the process would exit non-zero at startup.
+            # There is exactly one process in this container, so world-read
+            # inside it costs nothing.
+            defaultMode: 0444
+        {{- if .Values.persistence.enabled }}
+        # An existing claim, referenced not created -- uninstalling the release
+        # must never be able to delete data.
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ required "persistence.existingClaim is required when persistence.enabled is true -- this chart does not create the PVC" .Values.persistence.existingClaim }}
+            readOnly: {{ .Values.persistence.readOnly }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

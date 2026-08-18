@@ -1,0 +1,34 @@
+---
+# Source: vp-fms-interceptor/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vp-fms-interceptor
+  labels:
+    helm.sh/chart: vp-fms-interceptor-0.1.0
+    app.kubernetes.io/name: vp-fms-interceptor
+    app.kubernetes.io/instance: vp-fms-interceptor
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: interceptor
+    app.kubernetes.io/part-of: vp-listener
+spec:
+  type: ClusterIP
+  # No sessionAffinity: a TCP connection is pinned to the pod that accepted it
+  # for its entire lifetime, so there is nothing for affinity to add.
+  ports:
+    - name: tcp-vp
+      port: 9100
+      targetPort: tcp-vp
+      protocol: TCP
+    # NO AUTH AND NO TLS on this port. With no NetworkPolicy it is reachable
+    # from anywhere in the cluster. Set service.exposeAdminPort=false to keep it
+    # pod-only and reach it with `oc port-forward` instead.
+    - name: http-admin
+      port: 9101
+      targetPort: http-admin
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: vp-fms-interceptor
+    app.kubernetes.io/instance: vp-fms-interceptor
+

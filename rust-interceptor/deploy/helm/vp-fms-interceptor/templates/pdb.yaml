@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "vp-fms-interceptor.fullname" . }}
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+spec:
+  # Keeps a node drain or a cluster upgrade from taking every replica at once.
+  # Must stay below the replica count or evictions block forever and the drain
+  # hangs -- the chart's validate helper enforces that against autoscaling.minReplicas.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "vp-fms-interceptor.selectorLabels" . | nindent 6 }}
+{{- end }}

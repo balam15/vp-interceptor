@@ -1,0 +1,82 @@
+# Production overlay for OpenShift.
+#
+#   helm upgrade --install vp-fms-interceptor . \
+#     -f values.yaml -f values-prod.yaml \
+#     --set config.upstream.addr=fms.prod.svc.cluster.local:8583 \
+#     --set config.kafka.brokers=kafka-bootstrap.prod.svc.cluster.local:9093
+#
+# CREDENTIALS DO NOT BELONG IN THIS FILE. It is committed. The rendered config
+# lands in a Secret, so adding sasl.username/sasl.password under
+# config.kafka.properties works structurally -- but pass them at deploy time
+# from the pipeline's variable group or a sealed secret, with --set-string.
+
+image:
+  # Override with the real registry path. Pin an immutable tag or a digest --
+  # a floating tag makes a rollback non-deterministic on an inline component.
+  repository: image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+logLevel: info
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  scaleDownStabilizationSeconds: 600
+
+# One replica per node where possible, so a node failure cannot take the whole
+# service. ScheduleAnyway rather than DoNotSchedule: refusing to place a pod is
+# worse than an uneven spread for something on the authorization path.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: vp-fms-interceptor
+
+service:
+  # Keep the unauthenticated admin port off the Service in prod. Reach metrics
+  # with `oc port-forward deploy/...`, or put a NetworkPolicy in front and turn
+  # this back on for Prometheus.
+  exposeAdminPort: false
+
+config:
+  upstream:
+    # REQUIRED -- set per environment, e.g. fms.prod.svc.cluster.local:8583
+    addr: ""
+    connect_timeout_ms: 3000
+
+  kafka:
+    enabled: true
+    # REQUIRED -- prod bootstrap servers, TLS listener port.
+    brokers: ""
+    topic: vp.fms.iso8583
+    properties:
+      # TLS to the broker, verified against the CA bundle already in the image
+      # (the runtime stage installs ca-certificates). No CA volume to mount.
+      #
+      # If the brokers use a private CA instead, mount it with extraVolumes /
+      # extraVolumeMounts and add:
+      #   "ssl.ca.location": "/etc/vp-fms/kafka-ca/ca.crt"
+      #
+      # Kafka TLS requires an image whose librdkafka was built with OpenSSL.
+      # Verify before deploying -- a producer that cannot be built degrades to
+      # proxy-only mode, which is silent: VP<->FMS keeps working and every probe
+      # stays green while nothing reaches the topic. See deploy/README.md.
+      "security.protocol": "SSL"

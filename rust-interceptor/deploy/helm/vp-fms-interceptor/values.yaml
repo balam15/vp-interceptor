@@ -1,0 +1,289 @@
+# Default values for vp-fms-interceptor. These are DEV defaults: Kafka is
+# PLAINTEXT and autoscaling is off. See values-prod.yaml for the OCP prod deltas.
+#
+# HOW THIS FILE IS ORGANISED
+#
+#   Everything under `config:` mirrors config.toml section-for-section, in the
+#   same snake_case the TOML uses, so RUNBOOK.md and this file describe the same
+#   knobs by the same names. It is rendered into a Secret and mounted at
+#   /etc/vp-fms/config.toml. Everything OUTSIDE `config:` is chart plumbing and
+#   uses ordinary camelCase Helm convention.
+#
+# WHY A SECRET AND NOT A CONFIGMAP
+#
+#   config.kafka.properties is the only place SASL/TLS credentials can be set --
+#   the binary reads exactly one TOML file and has no env-var overrides. Putting
+#   the whole file in a Secret means enabling SASL later needs no restructuring.
+
+# -------------------------------------------------------------------- image
+image:
+  # Full path in your registry, e.g.
+  #   image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
+  # for the OCP internal registry, or your Azure Container Registry path.
+  repository: vp-fms-interceptor
+  # Empty means "use .Chart.AppVersion". Pin to an immutable tag or a digest in
+  # prod -- this sits inline on an authorization path, so you want reproducible
+  # rollbacks.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ------------------------------------------------------------------ workload
+# Ignored when autoscaling.enabled is true (the HPA owns the replica count then).
+replicaCount: 2
+
+# RUST_LOG. The only environment variable the binary reads (src/main.rs:105).
+# Accepts tracing-subscriber filter syntax, e.g. "info,vp_fms_interceptor=debug".
+logLevel: info
+
+# Limits are 0.5 core / 512Mi. BENCHMARK.md measures idle RSS at 4.0 MB, warm at
+# 20.9 MB, peak under load at 43.1 MB and 28.4 ms of CPU per 1k messages -- so
+# half a core carries roughly 17k messages/second and the memory limit is ~12x
+# observed peak. Both are deliberately generous: an OOMKill or CPU starvation
+# here lands on live authorizations.
+#
+# Requests are much lower than limits (Burstable QoS). Set requests equal to
+# limits instead if you want Guaranteed QoS, which makes the pod the last thing
+# evicted under node memory pressure.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# On SIGTERM the process stops accepting, drains in-flight connections for up to
+# DRAIN_TIMEOUT (30s) then flushes Kafka for up to KAFKA_FLUSH_TIMEOUT (5s)
+# -- src/main.rs:68. Anything below ~40 SIGKILLs live authorizations mid-flight.
+terminationGracePeriodSeconds: 60
+
+# Endpoint removal is asynchronous: without this pause VP can still dial a pod
+# that has already begun draining. Set 0 to disable the preStop hook.
+preStopSleepSeconds: 5
+
+# maxUnavailable 0 keeps full capacity throughout a roll.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# WHAT THE PROBES DO AND DO NOT CATCH
+#
+#   Liveness is not health. /healthz returns "ok" whenever the admin task is
+#   alive, and it stays green while FMS is unreachable and while Kafka is down.
+#   That is deliberate (RUNBOOK.md section 7): a dead FMS must not cascade into
+#   pods being restarted, which would help nothing. Detect those from /metrics
+#   instead, by alerting on vp_interceptor_upstream_connect_failed and
+#   vp_interceptor_kafka_delivery_failed.
+#
+#   All three probes hit the ADMIN port. Do not "improve" readiness by pointing
+#   it at the data port: the proxy dials FMS the moment it accepts a connection,
+#   so a tcpSocket probe on 9100 opens and drops a real FMS connection on every
+#   probe interval and inflates upstream_connect_failed. Nothing is lost by
+#   probing 9101 -- failing to bind 9100 is fatal at startup, so a live process
+#   always has the data port bound.
+probes:
+  startup:
+    enabled: true
+    periodSeconds: 2
+    failureThreshold: 15
+  liveness:
+    enabled: true
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# ------------------------------------------------------------------- service
+service:
+  # ClusterIP: VP dials this from inside the cluster. An OpenShift Route cannot
+  # carry raw non-TLS TCP, so exposing 9100 externally means NodePort or
+  # LoadBalancer -- change the type here if that ever becomes necessary.
+  type: ClusterIP
+  annotations: {}
+  # Publish the admin port (metrics/healthz) on the Service. It has NO AUTH AND
+  # NO TLS, so with no NetworkPolicy it is reachable from anywhere in the
+  # cluster. Set false to keep it pod-only, reachable via `oc port-forward`.
+  exposeAdminPort: true
+
+serviceAccount:
+  create: true
+  annotations: {}
+  # Empty means "use the fullname". The app makes no Kubernetes API calls, so
+  # this SA intentionally has no RBAC attached.
+  name: ""
+
+# ---------------------------------------------------------------- resilience
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  # CAVEAT: existing VP connections are long-lived and do NOT rebalance onto new
+  # pods. Scaling out only helps NEW connections, so this is useful under
+  # connection churn and nearly useless under a fixed pool of persistent
+  # connections. Off by default; values-prod.yaml turns it on.
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0
+  # Long window so a traffic dip cannot churn pods that still hold connections.
+  scaleDownStabilizationSeconds: 300
+
+# Spread replicas across nodes so one node loss cannot take the whole service.
+topologySpreadConstraints: []
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Mount a PersistentVolumeClaim that ALREADY EXISTS in the namespace. The chart
+# does not create the claim -- it only references it, so nothing is destroyed
+# when the release is uninstalled.
+#
+# READ THIS BEFORE ENABLING IT FOR LOGS:
+#   the process logs to stdout only (tracing_subscriber::fmt, src/main.rs:105)
+#   and opens exactly one file in its whole life, the config. Mounting a volume
+#   does not redirect logs onto it -- the volume will simply stay empty. On
+#   OpenShift, stdout is what the cluster log collector ingests, which is where
+#   these logs are meant to go. Writing rolling log files to this volume instead
+#   would need tracing-appender wired into main.rs.
+persistence:
+  enabled: false
+  # Name of the existing PVC in this namespace.
+  existingClaim: ""
+  mountPath: /var/log/vp-fms
+  # Mount only a sub-directory of the volume, so several components can share
+  # one claim without colliding. Empty mounts the volume root.
+  subPath: ""
+  readOnly: false
+
+# Extra volumes/mounts, e.g. a custom Kafka CA bundle. Referenced from
+# config.kafka.properties via ssl.ca.location.
+extraVolumes: []
+extraVolumeMounts: []
+
+# ===========================================================================
+# config.toml -- rendered verbatim into a Secret, mounted at
+# /etc/vp-fms/config.toml, passed as argv[1].
+#
+# Design rule from the shipped config.toml, preserved here: nothing under
+# [kafka] or [tee] is allowed to affect the VP<->FMS path. Tuning them wrong
+# costs you observability, never availability.
+# ===========================================================================
+config:
+  listen:
+    # MUST be 0.0.0.0, not 127.0.0.1 -- inside a pod, loopback is reachable only
+    # from the pod itself, so VP and the readiness probe could never connect.
+    # The container port and the Service target port are both derived from this.
+    addr: "0.0.0.0:9100"
+    # Hard cap on concurrent VP connections. Excess connections are accepted and
+    # closed immediately rather than queued, so VP sees a fast failure.
+    max_connections: 4096
+
+  upstream:
+    # REQUIRED. The real FMS endpoint -- an in-cluster Service DNS name such as
+    # fms.svc-namespace.svc.cluster.local:8583, or an external host:port.
+    # A 127.0.0.1 address here means THIS POD and the chart refuses to render it.
+    addr: ""
+    connect_timeout_ms: 3000
+
+  proxy:
+    read_buffer_bytes: 16384
+    # TCP_NODELAY on both sockets. Leave this on: Nagle can add ~40ms to small
+    # ISO 8583 messages, which dwarfs everything else this program does.
+    nodelay: true
+    # Close an idle connection after this long. 0 disables.
+    idle_timeout_ms: 0
+
+  tee:
+    # Framing/publish workers. Connections are assigned conn_id % shards, so each
+    # worker owns its framer state without locking.
+    shards: 4
+    # Per-shard bounded queue. When full, frames are DROPPED and counted
+    # (vp_interceptor_tee_dropped). This bound is the isolation boundary between
+    # Kafka and the hot path.
+    queue_capacity: 8192
+    # vp_to_fms | fms_to_vp | both
+    publish_directions: both
+
+  framing:
+    # length_prefix reassembles whole messages (what ISO 8583 needs);
+    # raw publishes socket reads as-is with no reassembly.
+    mode: length_prefix
+    prefix_bytes: 2          # 2 or 4
+    big_endian: true
+    length_includes_prefix: false
+    max_frame_bytes: 65536   # a larger frame means the framer is desynced
+
+  timing:
+    # Measured on the tee workers, so it never touches the forwarding path.
+    # Adds conn_age_ms, gap_ms and (on fms_to_vp) rtt_ms to each envelope.
+    enabled: true
+    # ASSUMES responses come back in request order. If VP pipelines AND FMS may
+    # answer out of order, rtt_ms values get mismatched -- set false and use gap_ms.
+    pair_request_response: true
+    max_pending: 256
+
+  parse:
+    # KEEP THIS none. The key_value parser is deliberately literal and does not
+    # validate: on 0800/0810 it returns an honest parse_error, but on 0200/0420
+    # it SUCCEEDS on the '=' inside DE 35 (track 2) and emits one field with ~130
+    # characters of garbage while reporting parse_error: null. The messages
+    # carrying the PAN are the ones that fail silently.
+    # `payload` is unaffected either way -- it is the byte-identical frame.
+    mode: none
+    pair_delimiter: ","
+    kv_delimiter: "="
+    trim: true
+    max_fields: 64
+
+  kafka:
+    enabled: true
+    # REQUIRED when enabled. Comma-separated bootstrap servers.
+    brokers: ""
+    topic: vp.fms.iso8583
+    # json -> envelope with conn_id/direction/seq/peer/ts_ms/length/payload
+    # raw  -> the reassembled frame byte-for-byte, metadata in Kafka headers only
+    value_format: json
+    # base64 (safe for binary ISO 8583) | hex (readable against a spec) |
+    # utf8 (text protocols ONLY -- lossy on binary, never use for evidence)
+    payload_encoding: base64
+    # Fire-and-forget: acks=1 and a short timeout mean a struggling broker sheds
+    # load quickly instead of backing up in memory.
+    acks: "1"
+    compression: lz4
+    linger_ms: 5
+    message_timeout_ms: 5000
+    queue_buffering_max_messages: 100000
+    queue_buffering_max_kbytes: 262144
+    # Raw librdkafka properties, passed through verbatim. The only place TLS and
+    # SASL can be configured. Dev is PLAINTEXT so this is empty; see
+    # values-prod.yaml for the TLS form.
+    properties: {}
+      # "security.protocol": "SSL"
+      # "sasl.mechanisms": "PLAIN"
+      # "sasl.username": "vp-fms-interceptor"
+      # "sasl.password": "..."
+
+  admin:
+    # Prometheus text on /metrics, JSON on /, liveness on /healthz.
+    #
+    # MUST be 0.0.0.0 in a pod. The file default is 127.0.0.1:9101, and a
+    # kubelet probe comes from the node, not from inside the pod -- so with
+    # loopback every probe fails while the app keeps serving traffic happily.
+    # An admin bind failure is non-fatal by design (src/admin.rs:35), so this
+    # misconfiguration is silent. The chart refuses to render a 127.0.0.1 value.
+    addr: "0.0.0.0:9101"

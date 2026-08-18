@@ -1,0 +1,141 @@
+---
+# Source: vp-fms-interceptor/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vp-fms-interceptor
+  labels:
+    helm.sh/chart: vp-fms-interceptor-0.1.0
+    app.kubernetes.io/name: vp-fms-interceptor
+    app.kubernetes.io/instance: vp-fms-interceptor
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: interceptor
+    app.kubernetes.io/part-of: vp-listener
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vp-fms-interceptor
+      app.kubernetes.io/instance: vp-fms-interceptor
+  template:
+    metadata:
+      annotations:
+        # The process reads config.toml once at startup and has no reload path,
+        # so without this a config-only `helm upgrade` would change the Secret
+        # and leave every pod running the old settings.
+        checksum/config: 8349a875fa3afa2bc4b131fcc1b15457d047d5c9c96a91a261fe077c42368e03
+      labels:
+        app.kubernetes.io/name: vp-fms-interceptor
+        app.kubernetes.io/instance: vp-fms-interceptor
+    spec:
+      serviceAccountName: vp-fms-interceptor
+      automountServiceAccountToken: false
+      # 30s connection drain + 5s Kafka flush (src/main.rs:68) plus the preStop
+      # pause. Too low and SIGKILL lands on live authorizations.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        # Deliberately NO runAsUser and NO fsGroup. OpenShift's restricted-v2 SCC
+        # assigns a UID from the namespace's range, and the image is already
+        # arbitrary-UID safe: the binary lives in /usr/local/bin, the config is
+        # world-readable, and nothing is ever written to disk.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: interceptor
+          image: "vp-fms-interceptor:0.1.0"
+          imagePullPolicy: IfNotPresent
+          # The config path is argv[1] (src/main.rs:132). Any override of args
+          # must keep a path here, or the process falls back to ./config.toml in
+          # the working directory and exits non-zero.
+          args:
+            - /etc/vp-fms/config.toml
+          ports:
+            - name: tcp-vp
+              containerPort: 9100
+              protocol: TCP
+            - name: http-admin
+              containerPort: 9101
+              protocol: TCP
+          env:
+            - name: RUST_LOG
+              value: "info"
+          # EVERY PROBE HITS THE ADMIN PORT, NEVER THE DATA PORT.
+          #
+          # A tcpSocket probe on 9100 looks like the obvious readiness check and
+          # is actively harmful here: the proxy dials FMS as soon as it accepts a
+          # connection (src/proxy.rs:70), so each probe opens and immediately
+          # drops a real upstream connection. That churns one FMS connection per
+          # pod per probe interval and increments upstream_connect_failed --
+          # the very counter the runbook tells you to alert on.
+          #
+          # Probing the admin port loses nothing: a failure to bind 9100 is fatal
+          # at startup (src/main.rs:210), so a process that is alive at all has
+          # the data port bound.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: 2
+            failureThreshold: 15
+          # Restarts the pod only if the admin task is gone. Stays green when
+          # FMS or Kafka is down -- see the probes note in values.yaml.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Admin port, for the reason spelled out on startupProbe above.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal is asynchronous. Without this pause the pod
+                # can still be handed new connections after SIGTERM has already
+                # put it into drain, and those get refused.
+                command: ["sleep", "5"]
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The process opens exactly one file -- the config -- and writes
+            # nothing; logs go to stdout.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vp-fms
+              readOnly: true
+      volumes:
+        - name: config
+          secret:
+            secretName: vp-fms-interceptor-config
+            # 0444 and not something tighter: a Secret volume is owned by
+            # root, and OpenShift runs this container as an arbitrary
+            # non-root UID from the namespace range, which is in neither the
+            # owning user nor the owning group. 0440 would make the config
+            # unreadable and the process would exit non-zero at startup.
+            # There is exactly one process in this container, so world-read
+            # inside it costs nothing.
+            defaultMode: 0444
+
