@@ -1,5 +1,7 @@
 pipeline {
-    agent { label 'docker-agent' }
+    agent {
+        label 'docker-agent'
+    }
 
     options {
         skipDefaultCheckout(true)
@@ -7,276 +9,111 @@ pipeline {
     }
 
     parameters {
-        string(
-            name: 'BRANCH',
-            defaultValue: 'master',
-            description: 'Git branch to checkout from Azure DevOps'
-        )
-
-        choice(
-            name: 'ENVIRONMENT',
-            choices: ['uat', 'staging', 'prod'],
-            description: 'Target environment'
-        )
-
-        booleanParam(
-            name: 'SKIP_BUILD',
-            defaultValue: false,
-            description: 'Skip build image stage'
-        )
-
-        booleanParam(
-            name: 'SKIP_PUSH',
-            defaultValue: false,
-            description: 'Skip push image to registry'
-        )
+        string(name: 'branchName', defaultValue: 'master', description: 'Input Branch Name, e.g. master')
+        string(name: 'imageTag', defaultValue: 'x.x.x', description: 'Input Image Tag, e.g. master-1.0.0')
+        choice(name: 'pushFlag', choices: ['false', 'true'], description: 'Flag for Push Image to Registry')
     }
 
     environment {
-        APP_NAME        = 'vp-fms-interceptor'
-        REMOTE_HOST     = '10.230.83.136'
-        REGISTRY        = 'repouat.maybank.co.id:8082'
+        repo           = "repouat.maybank.co.id:8082"
+        serviceName    = "vp-fms-interceptor"
 
-        GIT_CREDENTIALS = 'endra-azure-token'
-        SSH_CREDENTIALS = 'ssh-root'
+        dockerFile     = "rust-interceptor/Dockerfile"
+        zscalerCert    = "zscaler-ca.cer"
 
-        GIT_URL         = 'https://MaybankDigitalTeam@dev.azure.com/MaybankDigitalTeam/VP%20Listener/_git/VP%20Listener'
+        remoteHost     = "10.230.83.136"
+        sshCredentials = "ssh-root"
 
-        PROXY_URL       = 'http://proxyzs.maybank.co.id:9443/'
-        NO_PROXY_LIST   = '.maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,localhost,127.0.0.1'
+        proxyUrl       = "http://proxyzs.maybank.co.id:9443/"
+        noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,localhost,127.0.0.1"
     }
 
     stages {
-        stage('Validate Parameters') {
+        stage('Confirm Execution') {
             steps {
                 script {
-                    if (!params.BRANCH?.trim()) {
-                        error "Parameter BRANCH is required"
-                    }
-
-                    if (params.SKIP_BUILD == true && params.SKIP_PUSH == false) {
-                        error "Invalid option: SKIP_BUILD=true but SKIP_PUSH=false. Push requires image tar from build stage."
-                    }
-
-                    env.TARGET_BRANCH = params.BRANCH.trim()
-                    env.TARGET_ENVIRONMENT = params.ENVIRONMENT
-                    env.SKIP_BUILD_VALUE = params.SKIP_BUILD.toString()
-                    env.SKIP_PUSH_VALUE = params.SKIP_PUSH.toString()
+                    input message: "Please confirm this execution?"
                 }
-
-                sh '''
-                    set -euo pipefail
-
-                    echo "APP_NAME           : ${APP_NAME}"
-                    echo "TARGET_BRANCH      : ${TARGET_BRANCH}"
-                    echo "TARGET_ENVIRONMENT : ${TARGET_ENVIRONMENT}"
-                    echo "REGISTRY           : ${REGISTRY}"
-                    echo "REMOTE_HOST        : ${REMOTE_HOST}"
-                    echo "GIT_CREDENTIALS    : ${GIT_CREDENTIALS}"
-                    echo "PROXY_URL          : ${PROXY_URL}"
-                    echo "NO_PROXY_LIST      : ${NO_PROXY_LIST}"
-                    echo "SKIP_BUILD         : ${SKIP_BUILD_VALUE}"
-                    echo "SKIP_PUSH          : ${SKIP_PUSH_VALUE}"
-                '''
             }
         }
 
-        stage('Check Tools') {
+        stage('Checkout Source Code') {
             steps {
-                sh '''
-                    set -euo pipefail
+                checkout scm
 
-                    echo "Check tools on Jenkins agent..."
-                    git --version
-                    podman --version
-                    ssh -V 2>&1
-                '''
-            }
-        }
-
-        stage('Checkout Azure DevOps') {
-            steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: "*/${env.TARGET_BRANCH}"]],
-                    userRemoteConfigs: [[
-                        credentialsId: "${env.GIT_CREDENTIALS}",
-                        url: "${env.GIT_URL}"
-                    ]],
-                    extensions: [
-                        [$class: 'CloneOption',
-                            shallow: true,
-                            depth: 1,
-                            noTags: false,
-                            timeout: 30
-                        ]
-                    ]
-                ])
-
-                sh '''
-                    set -euo pipefail
-
-                    echo "Git checkout completed."
-
-                    echo ""
-                    echo "Current directory:"
-                    pwd
-
-                    echo ""
-                    echo "Git remote:"
-                    git remote -v
-
-                    echo ""
-                    echo "Git branch:"
+                sh """
+                    echo "Current Branch:"
                     git branch -a
 
-                    echo ""
-                    echo "Latest commit:"
+                    echo "Latest Commit:"
                     git log -1 --oneline
-                '''
+                """
             }
         }
 
-        stage('Prepare Image Metadata') {
+        stage('Build Container Image') {
             steps {
-                script {
-                    env.SAFE_BRANCH = env.TARGET_BRANCH.replaceAll('/', '-')
-                    env.GIT_SHORT_SHA = sh(
-                        script: 'git rev-parse --short=8 HEAD',
-                        returnStdout: true
-                    ).trim()
+                sh """
+                    set -e
 
-                    env.TAG = "${env.SAFE_BRANCH}-${env.BUILD_NUMBER}-${env.GIT_SHORT_SHA}"
-                    env.LOCAL_IMAGE = "${env.APP_NAME}:${env.TAG}"
-                    env.REMOTE_IMAGE = "${env.REGISTRY}/${env.APP_NAME}:${env.TAG}"
-                    env.IMAGE_TAR = "${env.APP_NAME}_${env.TAG}.tar"
-                }
-
-                sh '''
-                    set -euo pipefail
-
-                    echo "SAFE_BRANCH   : ${SAFE_BRANCH}"
-                    echo "GIT_SHORT_SHA : ${GIT_SHORT_SHA}"
-                    echo "TAG           : ${TAG}"
-                    echo "LOCAL_IMAGE   : ${LOCAL_IMAGE}"
-                    echo "REMOTE_IMAGE  : ${REMOTE_IMAGE}"
-                    echo "IMAGE_TAR     : ${IMAGE_TAR}"
-                '''
-            }
-        }
-
-        stage('Build Image Rust Interceptor') {
-            when {
-                expression { params.SKIP_BUILD != true }
-            }
-
-            steps {
-                sh '''
-                    set -euo pipefail
-
-                    echo "Check Dockerfile..."
-                    test -f rust-interceptor/Dockerfile
-
-                    echo ""
-                    echo "Check config.toml..."
+                    echo "Check required files ..."
+                    test -f ${dockerFile}
                     test -f config.toml
+                    test -f ${zscalerCert}
+                    grep "BEGIN CERTIFICATE" ${zscalerCert}
 
-                    echo ""
-                    echo "Check Zscaler CA file..."
-                    test -f zscaler-ca.cer
-                    grep "BEGIN CERTIFICATE" zscaler-ca.cer
-
-                    echo ""
-                    echo "Build image:"
-                    echo "${LOCAL_IMAGE}"
-
-                    podman build \
-                      --build-arg EXTRA_CA_CERT=zscaler-ca.cer \
-                      --build-arg HTTP_PROXY="${PROXY_URL}" \
-                      --build-arg HTTPS_PROXY="${PROXY_URL}" \
-                      --build-arg http_proxy="${PROXY_URL}" \
-                      --build-arg https_proxy="${PROXY_URL}" \
-                      --build-arg NO_PROXY="${NO_PROXY_LIST}" \
-                      --build-arg no_proxy="${NO_PROXY_LIST}" \
-                      -f rust-interceptor/Dockerfile \
-                      -t "${LOCAL_IMAGE}" \
+                    echo "Build container image ..."
+                    podman build \\
+                      --build-arg EXTRA_CA_CERT=${zscalerCert} \\
+                      --build-arg HTTP_PROXY=${proxyUrl} \\
+                      --build-arg HTTPS_PROXY=${proxyUrl} \\
+                      --build-arg http_proxy=${proxyUrl} \\
+                      --build-arg https_proxy=${proxyUrl} \\
+                      --build-arg NO_PROXY=${noProxyList} \\
+                      --build-arg no_proxy=${noProxyList} \\
+                      -f ${dockerFile} \\
+                      -t ${serviceName}:${params.imageTag} \\
                       .
 
-                    echo ""
-                    echo "Save image to tar:"
-                    podman save "${LOCAL_IMAGE}" -o "${IMAGE_TAR}"
+                    echo "Save image to tar ..."
+                    podman save ${serviceName}:${params.imageTag} -o ${serviceName}_${params.imageTag}.tar
 
-                    echo ""
-                    echo "Validate image tar:"
-                    ls -lh "${IMAGE_TAR}"
-                '''
+                    echo "Validate image tar ..."
+                    ls -lh ${serviceName}_${params.imageTag}.tar
+                """
             }
         }
 
-        stage('Validate Remote Host') {
+        stage('Push Image to UAT Registry') {
             when {
-                expression { params.SKIP_PUSH != true }
+                expression { params.pushFlag == 'true' }
             }
 
             steps {
-                sshagent(credentials: ["${env.SSH_CREDENTIALS}"]) {
-                    sh '''
-                        set -euo pipefail
+                sshagent(credentials: [env.sshCredentials]) {
+                    sh """
+                        set -e
 
-                        echo "Check SSH connection to remote host..."
-                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "hostname && whoami && podman --version"
+                        echo "Copy image tar to remote host ..."
+                        scp -o StrictHostKeyChecking=no \\
+                          ${serviceName}_${params.imageTag}.tar \\
+                          root@${remoteHost}:/tmp/
 
-                        echo ""
-                        echo "Check registry connectivity from remote host..."
-                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "curl -v --connect-timeout 10 http://${REGISTRY}/v2/ || true"
-                    '''
-                }
-            }
-        }
+                        echo "Load, tag, and push image from remote host ..."
+                        ssh -o StrictHostKeyChecking=no root@${remoteHost} '
+                            set -e
 
-        stage('Push Image via Remote Host') {
-            when {
-                expression { params.SKIP_PUSH != true }
-            }
+                            podman load -i /tmp/${serviceName}_${params.imageTag}.tar
 
-            steps {
-                sshagent(credentials: ["${env.SSH_CREDENTIALS}"]) {
-                    sh '''
-                        set -euo pipefail
+                            podman tag \\
+                              ${serviceName}:${params.imageTag} \\
+                              ${repo}/${serviceName}:${params.imageTag}
 
-                        echo "Check local image tar:"
-                        ls -lh "${IMAGE_TAR}"
+                            podman push ${repo}/${serviceName}:${params.imageTag}
 
-                        echo ""
-                        echo "Copy image tar to remote host..."
-                        scp -o StrictHostKeyChecking=no \
-                          "${IMAGE_TAR}" \
-                          root@${REMOTE_HOST}:/tmp/
-
-                        echo ""
-                        echo "Load image on remote host..."
-                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
-                          "podman load -i /tmp/${IMAGE_TAR}"
-
-                        echo ""
-                        echo "Tag image for registry..."
-                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
-                          "podman image tag ${LOCAL_IMAGE} ${REMOTE_IMAGE}"
-
-                        echo ""
-                        echo "Push image to registry..."
-                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
-                          "podman push ${REMOTE_IMAGE}"
-
-                        echo ""
-                        echo "Clean remote image tar..."
-                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
-                          "rm -f /tmp/${IMAGE_TAR}"
-
-                        echo ""
-                        echo "Image pushed successfully:"
-                        echo "${REMOTE_IMAGE}"
-                    '''
+                            rm -f /tmp/${serviceName}_${params.imageTag}.tar
+                        '
+                    """
                 }
             }
         }
@@ -284,26 +121,22 @@ pipeline {
 
     post {
         always {
-            sh '''
+            sh """
                 set +e
 
-                echo "Cleanup local image tar..."
-                rm -f vp-fms-interceptor_*.tar || true
-
-                echo ""
-                echo "Current podman images:"
-                podman images | grep vp-fms-interceptor || true
-            '''
+                rm -f ${serviceName}_*.tar
+                podman images | grep ${serviceName} || true
+            """
 
             cleanWs()
         }
 
         success {
-            echo "Pipeline completed successfully."
+            echo 'Pipeline Completed'
         }
 
         failure {
-            echo "Pipeline failed."
+            echo 'Pipeline Failed'
         }
     }
 }
