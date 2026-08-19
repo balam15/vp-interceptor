@@ -18,8 +18,18 @@ Kafka on a separate path that is not allowed to affect forwarding.
 | `generate-k8s.sh` | regenerates `k8s/` from the chart |
 
 There is no `Pod` manifest. Pods come from the Deployment's ReplicaSet: a bare
-Pod is not rescheduled when its node dies, not rolled on upgrade, and not
-covered by the PodDisruptionBudget.
+Pod is not rescheduled when its node dies and not rolled on upgrade.
+
+**One replica, no autoscaler.** The chart ships `replicaCount: 1` with
+`autoscaling.enabled: false` in both the dev and the prod values, because a
+second pod does not relieve the first: VP's connections are long-lived and never
+rebalance, so a new replica only ever serves connections opened after it came up.
+No `PodDisruptionBudget` ships either -- over a single pod, any PDB that keeps it
+running makes `oc adm drain` hang forever, and the chart fails the render on that
+combination. The cost is redundancy: a node failure or an OOMKill is an outage
+until the pod is rescheduled. Raise `replicaCount` and re-enable
+`podDisruptionBudget` (with `minAvailable` strictly below the replica count) if
+that matters more than the connection behaviour.
 
 ## 1. Build and push the image
 
@@ -180,12 +190,13 @@ raw non-TLS TCP, so a Route cannot carry it. VP must reach the Service from
 inside the cluster. If VP is ever outside, that means a NodePort, a
 LoadBalancer, or an external TCP ingress -- not a Route.
 
-**Rolling a release does not drop connections, but scaling in can churn them.**
-`maxUnavailable: 0` plus a 5s preStop pause plus a 60s grace period lets in-flight
-connections finish: on SIGTERM the process stops accepting and drains for up to
-30s, then flushes Kafka for up to 5s. Autoscaling is a different matter --
-existing VP connections do **not** rebalance onto new pods, so scale-out only
-affects newly established connections.
+**Rolling a release does not drop connections, even at one replica.**
+`maxUnavailable: 0` with `maxSurge: 1` brings the replacement pod to Ready before
+the old one is signalled, and a 5s preStop pause plus a 60s grace period lets
+in-flight connections finish: on SIGTERM the process stops accepting and drains
+for up to 30s, then flushes Kafka for up to 5s. What a single replica does not
+survive is an *involuntary* disruption -- node loss, eviction, OOMKill -- which is
+an outage on the authorization path until the pod is back.
 
 **Config changes need a rollout, and they get one.** The process reads
 `config.toml` once at startup with no reload path. The Deployment carries a

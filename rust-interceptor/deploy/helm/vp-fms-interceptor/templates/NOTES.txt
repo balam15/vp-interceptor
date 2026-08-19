@@ -51,4 +51,10 @@ Set service.exposeAdminPort=false to make it pod-only.
 
 NOTE: autoscaling is on ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas). Existing VP connections do not
 rebalance onto new pods -- scale-out only affects newly established connections.
+{{- else if eq (int .Values.replicaCount) 1 }}
+
+NOTE: one replica, no HPA. A `helm upgrade` still rolls without a gap (the new
+pod becomes Ready before the old one is signalled), but there is no redundancy
+against an involuntary disruption: a node failure, an eviction or an OOMKill is
+an outage on the VP->FMS path until the pod is rescheduled.
 {{- end }}

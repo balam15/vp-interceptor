@@ -103,9 +103,15 @@ mystery into a message at `helm install` time.
 {{- end -}}
 {{- end -}}
 
-{{- if and .Values.autoscaling.enabled .Values.podDisruptionBudget.enabled -}}
-{{- if ge (int .Values.podDisruptionBudget.minAvailable) (int .Values.autoscaling.minReplicas) -}}
-{{- fail (printf "podDisruptionBudget.minAvailable (%v) must be less than autoscaling.minReplicas (%v), otherwise no pod can ever be evicted and node drains hang" .Values.podDisruptionBudget.minAvailable .Values.autoscaling.minReplicas) -}}
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- $floor := int .Values.replicaCount -}}
+{{- $source := "replicaCount" -}}
+{{- if .Values.autoscaling.enabled -}}
+{{- $floor = int .Values.autoscaling.minReplicas -}}
+{{- $source = "autoscaling.minReplicas" -}}
+{{- end -}}
+{{- if ge (int .Values.podDisruptionBudget.minAvailable) $floor -}}
+{{- fail (printf "podDisruptionBudget.minAvailable (%v) must be less than %s (%v), otherwise no pod can ever be evicted and node drains hang forever. At one replica no PDB is valid -- set podDisruptionBudget.enabled=false." .Values.podDisruptionBudget.minAvailable $source $floor) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

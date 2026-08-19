@@ -16,7 +16,11 @@ image:
   repository: image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
   pullPolicy: IfNotPresent
 
-replicaCount: 3
+# One pod, same as the dev default -- see the long note in values.yaml. Prod does
+# not raise this: a second replica would not relieve the existing long-lived VP
+# connections, which never rebalance. The trade is no redundancy against node
+# loss; raise this and re-enable the PDB below if prod needs that.
+replicaCount: 1
 
 logLevel: info
 
@@ -28,27 +32,21 @@ resources:
     cpu: 500m
     memory: 512Mi
 
+# Off at one replica: any PDB that guarantees the single pod stays up makes node
+# drains and cluster upgrades hang on it forever. Re-enable together with
+# replicaCount >= 2.
 podDisruptionBudget:
-  enabled: true
-  minAvailable: 2
+  enabled: false
+  minAvailable: 1
 
+# No HPA in prod. Scale-out cannot move connections that are already open, so it
+# would add a controller fighting `helm upgrade` over the replica count and buy
+# nothing on this traffic shape.
 autoscaling:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 8
-  targetCPUUtilizationPercentage: 70
-  scaleDownStabilizationSeconds: 600
+  enabled: false
 
-# One replica per node where possible, so a node failure cannot take the whole
-# service. ScheduleAnyway rather than DoNotSchedule: refusing to place a pod is
-# worse than an uneven spread for something on the authorization path.
-topologySpreadConstraints:
-  - maxSkew: 1
-    topologyKey: kubernetes.io/hostname
-    whenUnsatisfiable: ScheduleAnyway
-    labelSelector:
-      matchLabels:
-        app.kubernetes.io/name: vp-fms-interceptor
+# Nothing to spread across nodes at one replica.
+topologySpreadConstraints: []
 
 service:
   # Keep the unauthenticated admin port off the Service in prod. Reach metrics

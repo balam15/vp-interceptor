@@ -1,5 +1,6 @@
 # Default values for vp-fms-interceptor. These are DEV defaults: Kafka is
-# PLAINTEXT and autoscaling is off. See values-prod.yaml for the OCP prod deltas.
+# PLAINTEXT, one replica, no autoscaling. See values-prod.yaml for the OCP prod
+# deltas.
 #
 # HOW THIS FILE IS ORGANISED
 #
@@ -33,8 +34,22 @@ nameOverride: ""
 fullnameOverride: ""
 
 # ------------------------------------------------------------------ workload
-# Ignored when autoscaling.enabled is true (the HPA owns the replica count then).
-replicaCount: 2
+# SINGLE REPLICA BY DESIGN. Scaling out buys less than it looks like it does:
+# existing VP connections are long-lived and never rebalance onto a new pod, so
+# a second replica only ever serves connections established after it came up.
+# One pod at 500m carries roughly 17k messages/second (BENCHMARK.md), which is
+# far above what this path sees.
+#
+# WHAT YOU GIVE UP: with one pod there is no redundancy. A node failure, an
+# eviction or an OOMKill is a full outage until the pod is rescheduled. A
+# rolling `helm upgrade` is still seamless -- updateStrategy below surges the
+# new pod up before the old one goes away -- but an involuntary disruption is
+# not. Raise this to 2+ (and turn podDisruptionBudget back on) if that is not
+# acceptable.
+#
+# Ignored when autoscaling.enabled is true, but autoscaling is off and meant to
+# stay off here.
+replicaCount: 1
 
 # RUST_LOG. The only environment variable the binary reads (src/main.rs:105).
 # Accepts tracing-subscriber filter syntax, e.g. "info,vp_fms_interceptor=debug".
@@ -66,7 +81,9 @@ terminationGracePeriodSeconds: 60
 # that has already begun draining. Set 0 to disable the preStop hook.
 preStopSleepSeconds: 5
 
-# maxUnavailable 0 keeps full capacity throughout a roll.
+# maxUnavailable 0 with maxSurge 1 is what makes a single-replica rollout
+# seamless: the replacement pod must be Ready before the old one is told to go,
+# so there is never a moment with no pod listening on 9100.
 updateStrategy:
   type: RollingUpdate
   rollingUpdate:
@@ -124,15 +141,23 @@ serviceAccount:
   name: ""
 
 # ---------------------------------------------------------------- resilience
+# OFF because replicaCount is 1. A PDB of minAvailable: 1 over a single pod
+# admits no voluntary eviction at all: `oc adm drain` on that node hangs forever
+# and a cluster upgrade stalls on it. The chart fails the render rather than
+# letting that combination reach a cluster.
+#
+# Turn this back on together with replicaCount >= 2, keeping minAvailable strictly
+# below the replica count.
 podDisruptionBudget:
-  enabled: true
+  enabled: false
   minAvailable: 1
 
 autoscaling:
-  # CAVEAT: existing VP connections are long-lived and do NOT rebalance onto new
-  # pods. Scaling out only helps NEW connections, so this is useful under
-  # connection churn and nearly useless under a fixed pool of persistent
-  # connections. Off by default; values-prod.yaml turns it on.
+  # OFF, and not just as a default. Existing VP connections are long-lived and do
+  # NOT rebalance onto new pods, so an HPA can only ever help NEW connections --
+  # nearly useless against a fixed pool of persistent ones, while adding a second
+  # controller that fights `helm upgrade` over the replica count. The keys below
+  # are kept so the shape is documented, not because they are expected to be used.
   enabled: false
   minReplicas: 2
   maxReplicas: 6
@@ -141,7 +166,7 @@ autoscaling:
   # Long window so a traffic dip cannot churn pods that still hold connections.
   scaleDownStabilizationSeconds: 300
 
-# Spread replicas across nodes so one node loss cannot take the whole service.
+# Nothing to spread at one replica. Only meaningful if replicaCount goes up.
 topologySpreadConstraints: []
 podAnnotations: {}
 podLabels: {}

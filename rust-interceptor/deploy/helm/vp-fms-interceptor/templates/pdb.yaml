@@ -7,8 +7,10 @@ metadata:
     {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
 spec:
   # Keeps a node drain or a cluster upgrade from taking every replica at once.
-  # Must stay below the replica count or evictions block forever and the drain
-  # hangs -- the chart's validate helper enforces that against autoscaling.minReplicas.
+  # Must stay strictly below the replica count or evictions block forever and the
+  # drain hangs -- the chart's validate helper enforces that against replicaCount
+  # (or autoscaling.minReplicas when an HPA owns the count). Disabled by default
+  # because this chart ships one replica, where no value is valid.
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:

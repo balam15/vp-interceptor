@@ -7,9 +7,10 @@
 # Values here are the DEV shape with obvious placeholders. Nothing secret goes
 # in: these files are committed.
 #
-# Autoscaling is enabled for this render so the generated set contains every
-# resource, and so deployment.yaml correctly omits `replicas` (the HPA owns it).
-# Delete hpa.yaml and add `replicas:` back if you do not want autoscaling.
+# Rendered with the chart defaults: one replica, no HPA, no PDB. So no hpa.yaml
+# and no pdb.yaml appear in k8s/ -- that is the chart's shape, not an omission.
+# Stale copies of both are removed below so a previous render cannot leave an
+# HPA behind that would immediately scale the Deployment back up.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,8 +21,14 @@ helm template vp-fms-interceptor "$here/helm/vp-fms-interceptor" \
     --set fullnameOverride=vp-fms-interceptor \
     --set config.upstream.addr=fms.vp-listener.svc.cluster.local:8583 \
     --set config.kafka.brokers=kafka.vp-listener.svc.cluster.local:9092 \
-    --set autoscaling.enabled=true \
     --output-dir "$out.tmp" >/dev/null
+
+# A template that renders empty produces no file at all, so a resource turned off
+# in values.yaml would otherwise survive here from an earlier render. Check what
+# helm actually wrote before flattening.
+for optional in hpa pdb; do
+    [ -f "$out.tmp/vp-fms-interceptor/templates/$optional.yaml" ] || rm -f "$out/$optional.yaml"
+done
 
 # helm --output-dir nests under <chart>/templates; flatten it.
 mv "$out.tmp/vp-fms-interceptor/templates/"*.yaml "$out/"

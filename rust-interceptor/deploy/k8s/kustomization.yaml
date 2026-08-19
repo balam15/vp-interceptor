@@ -10,8 +10,10 @@ resources:
   - secret-config.yaml
   - service.yaml
   - deployment.yaml
-  - pdb.yaml
-  - hpa.yaml
+
+# No hpa.yaml and no pdb.yaml: this deploys ONE replica with no autoscaler. A PDB
+# over a single pod would block node drains forever, and an HPA cannot help a
+# workload whose connections are long-lived and never rebalance.
 
 # Set the namespace here rather than in each file, so one edit moves the whole
 # set. Must match the namespace in the FMS/Kafka addresses in secret-config.yaml.
