@@ -33,11 +33,13 @@ pipeline {
     }
 
     environment {
-        APP_NAME = 'vp-fms-interceptor'
-        REMOTE_HOST = '10.230.83.136'
-        REGISTRY = 'repouat.maybank.co.id:8082'
+        APP_NAME        = 'vp-fms-interceptor'
+        REMOTE_HOST     = '10.230.83.136'
+        REGISTRY        = 'repouat.maybank.co.id:8082'
         GIT_CREDENTIALS = '23834c4a-3c8a-47cb-bd51-c4662f9d64dd'
         SSH_CREDENTIALS = 'ssh-root'
+
+        GIT_URL         = 'https://maybankdigitalteam.visualstudio.com/VP%20Listener/_git/VP%20Listener'
     }
 
     stages {
@@ -51,18 +53,37 @@ pipeline {
                     if (params.SKIP_BUILD == true && params.SKIP_PUSH == false) {
                         error "Invalid option: SKIP_BUILD=true but SKIP_PUSH=false. Push requires image tar from build stage."
                     }
+
+                    env.TARGET_BRANCH = params.BRANCH.trim()
+                    env.TARGET_ENVIRONMENT = params.ENVIRONMENT
+                    env.SKIP_BUILD_VALUE = params.SKIP_BUILD.toString()
+                    env.SKIP_PUSH_VALUE = params.SKIP_PUSH.toString()
                 }
 
                 sh '''
                     set -euo pipefail
 
-                    echo "APP_NAME    : ${APP_NAME}"
-                    echo "BRANCH      : ${BRANCH}"
-                    echo "ENVIRONMENT : ${ENVIRONMENT}"
-                    echo "REGISTRY    : ${REGISTRY}"
-                    echo "REMOTE_HOST : ${REMOTE_HOST}"
-                    echo "SKIP_BUILD  : ${SKIP_BUILD}"
-                    echo "SKIP_PUSH   : ${SKIP_PUSH}"
+                    echo "APP_NAME           : ${APP_NAME}"
+                    echo "TARGET_BRANCH      : ${TARGET_BRANCH}"
+                    echo "TARGET_ENVIRONMENT : ${TARGET_ENVIRONMENT}"
+                    echo "REGISTRY           : ${REGISTRY}"
+                    echo "REMOTE_HOST        : ${REMOTE_HOST}"
+                    echo "SKIP_BUILD         : ${SKIP_BUILD_VALUE}"
+                    echo "SKIP_PUSH          : ${SKIP_PUSH_VALUE}"
+                '''
+            }
+        }
+
+        stage('Check Tools') {
+            steps {
+                sh '''
+                    set -euo pipefail
+
+                    echo "Check tools on Jenkins agent..."
+                    git --version
+                    podman --version
+                    scp -V 2>&1 | head -1 || true
+                    ssh -V 2>&1
                 '''
             }
         }
@@ -71,10 +92,10 @@ pipeline {
             steps {
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: "*/${params.BRANCH}"]],
+                    branches: [[name: "*/${env.TARGET_BRANCH}"]],
                     userRemoteConfigs: [[
                         credentialsId: "${env.GIT_CREDENTIALS}",
-                        url: 'https://maybankdigitalteam.visualstudio.com/VP%20Listener/_git/VP%20Listener'
+                        url: "${env.GIT_URL}"
                     ]],
                     extensions: [
                         [$class: 'CloneOption',
@@ -90,7 +111,16 @@ pipeline {
                     set -euo pipefail
 
                     echo "Git checkout completed."
+                    echo ""
+                    echo "Current directory:"
+                    pwd
+
+                    echo ""
+                    echo "Git branch:"
                     git branch -a
+
+                    echo ""
+                    echo "Latest commit:"
                     git log -1 --oneline
                 '''
             }
@@ -99,7 +129,7 @@ pipeline {
         stage('Prepare Image Metadata') {
             steps {
                 script {
-                    env.SAFE_BRANCH = params.BRANCH.replaceAll('/', '-')
+                    env.SAFE_BRANCH = env.TARGET_BRANCH.replaceAll('/', '-')
                     env.GIT_SHORT_SHA = sh(
                         script: 'git rev-parse --short=8 HEAD',
                         returnStdout: true
@@ -114,12 +144,12 @@ pipeline {
                 sh '''
                     set -euo pipefail
 
-                    echo "SAFE_BRANCH  : ${SAFE_BRANCH}"
-                    echo "GIT_SHORT_SHA: ${GIT_SHORT_SHA}"
-                    echo "TAG          : ${TAG}"
-                    echo "LOCAL_IMAGE  : ${LOCAL_IMAGE}"
-                    echo "REMOTE_IMAGE : ${REMOTE_IMAGE}"
-                    echo "IMAGE_TAR    : ${IMAGE_TAR}"
+                    echo "SAFE_BRANCH   : ${SAFE_BRANCH}"
+                    echo "GIT_SHORT_SHA : ${GIT_SHORT_SHA}"
+                    echo "TAG           : ${TAG}"
+                    echo "LOCAL_IMAGE   : ${LOCAL_IMAGE}"
+                    echo "REMOTE_IMAGE  : ${REMOTE_IMAGE}"
+                    echo "IMAGE_TAR     : ${IMAGE_TAR}"
                 '''
             }
         }
@@ -133,6 +163,10 @@ pipeline {
                 sh '''
                     set -euo pipefail
 
+                    echo "Check Dockerfile..."
+                    test -f rust-interceptor/Dockerfile
+
+                    echo ""
                     echo "Build image:"
                     echo "${LOCAL_IMAGE}"
 
@@ -141,11 +175,35 @@ pipeline {
                       -t "${LOCAL_IMAGE}" \
                       .
 
+                    echo ""
                     echo "Save image to tar:"
                     podman save "${LOCAL_IMAGE}" -o "${IMAGE_TAR}"
 
+                    echo ""
+                    echo "Validate image tar:"
                     ls -lh "${IMAGE_TAR}"
                 '''
+            }
+        }
+
+        stage('Validate Remote Host') {
+            when {
+                expression { params.SKIP_PUSH != true }
+            }
+
+            steps {
+                sshagent(credentials: ["${env.SSH_CREDENTIALS}"]) {
+                    sh '''
+                        set -euo pipefail
+
+                        echo "Check SSH connection to remote host..."
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "hostname && whoami && podman --version"
+
+                        echo ""
+                        echo "Check registry connectivity from remote host..."
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "curl -v --connect-timeout 10 http://${REGISTRY}/v2/ || true"
+                    '''
+                }
             }
         }
 
@@ -162,27 +220,33 @@ pipeline {
                         echo "Check local image tar:"
                         ls -lh "${IMAGE_TAR}"
 
+                        echo ""
                         echo "Copy image tar to remote host..."
                         scp -o StrictHostKeyChecking=no \
                           "${IMAGE_TAR}" \
                           root@${REMOTE_HOST}:/tmp/
 
+                        echo ""
                         echo "Load image on remote host..."
                         ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
                           "podman load -i /tmp/${IMAGE_TAR}"
 
+                        echo ""
                         echo "Tag image for registry..."
                         ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
                           "podman image tag ${LOCAL_IMAGE} ${REMOTE_IMAGE}"
 
+                        echo ""
                         echo "Push image to registry..."
                         ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
                           "podman push ${REMOTE_IMAGE}"
 
+                        echo ""
                         echo "Clean remote image tar..."
                         ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
                           "rm -f /tmp/${IMAGE_TAR}"
 
+                        echo ""
                         echo "Image pushed successfully:"
                         echo "${REMOTE_IMAGE}"
                     '''
@@ -196,11 +260,12 @@ pipeline {
             sh '''
                 set +e
 
-                echo "Cleanup local workspace image tar..."
-                rm -f "${APP_NAME}"_*.tar || true
+                echo "Cleanup local image tar..."
+                rm -f vp-fms-interceptor_*.tar || true
 
+                echo ""
                 echo "Current podman images:"
-                podman images | grep "${APP_NAME}" || true
+                podman images | grep vp-fms-interceptor || true
             '''
 
             cleanWs()
