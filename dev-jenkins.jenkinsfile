@@ -42,9 +42,8 @@ pipeline {
 
         GIT_URL         = 'https://MaybankDigitalTeam@dev.azure.com/MaybankDigitalTeam/VP%20Listener/_git/VP%20Listener'
 
-        HTTP_PROXY      = 'http://proxyzs.maybank.co.id:9443/'
-        HTTPS_PROXY     = 'http://proxyzs.maybank.co.id:9443/'
-        NO_PROXY        = '.maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,localhost,127.0.0.1'
+        PROXY_URL       = 'http://proxyzs.maybank.co.id:9443/'
+        NO_PROXY_LIST   = '.maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,localhost,127.0.0.1'
     }
 
     stages {
@@ -74,6 +73,8 @@ pipeline {
                     echo "REGISTRY           : ${REGISTRY}"
                     echo "REMOTE_HOST        : ${REMOTE_HOST}"
                     echo "GIT_CREDENTIALS    : ${GIT_CREDENTIALS}"
+                    echo "PROXY_URL          : ${PROXY_URL}"
+                    echo "NO_PROXY_LIST      : ${NO_PROXY_LIST}"
                     echo "SKIP_BUILD         : ${SKIP_BUILD_VALUE}"
                     echo "SKIP_PUSH          : ${SKIP_PUSH_VALUE}"
                 '''
@@ -191,12 +192,12 @@ pipeline {
 
                     podman build \
                       --build-arg EXTRA_CA_CERT=zscaler-ca.cer \
-                      --build-arg HTTP_PROXY="${HTTP_PROXY}" \
-                      --build-arg HTTPS_PROXY="${HTTPS_PROXY}" \
-                      --build-arg http_proxy="${HTTP_PROXY}" \
-                      --build-arg https_proxy="${HTTPS_PROXY}" \
-                      --build-arg NO_PROXY="${NO_PROXY}" \
-                      --build-arg no_proxy="${NO_PROXY}" \
+                      --build-arg HTTP_PROXY="${PROXY_URL}" \
+                      --build-arg HTTPS_PROXY="${PROXY_URL}" \
+                      --build-arg http_proxy="${PROXY_URL}" \
+                      --build-arg https_proxy="${PROXY_URL}" \
+                      --build-arg NO_PROXY="${NO_PROXY_LIST}" \
+                      --build-arg no_proxy="${NO_PROXY_LIST}" \
                       -f rust-interceptor/Dockerfile \
                       -t "${LOCAL_IMAGE}" \
                       .
