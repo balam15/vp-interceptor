@@ -9,7 +9,7 @@ pipeline {
     parameters {
         string(
             name: 'BRANCH',
-            defaultValue: 'main',
+            defaultValue: 'master',
             description: 'Git branch to checkout from Azure DevOps'
         )
 
@@ -41,6 +41,10 @@ pipeline {
         SSH_CREDENTIALS = 'ssh-root'
 
         GIT_URL         = 'https://MaybankDigitalTeam@dev.azure.com/MaybankDigitalTeam/VP%20Listener/_git/VP%20Listener'
+
+        HTTP_PROXY      = 'http://proxyzs.maybank.co.id:9443/'
+        HTTPS_PROXY     = 'http://proxyzs.maybank.co.id:9443/'
+        NO_PROXY        = '.maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,localhost,127.0.0.1'
     }
 
     stages {
@@ -112,8 +116,8 @@ pipeline {
                     set -euo pipefail
 
                     echo "Git checkout completed."
-                    echo ""
 
+                    echo ""
                     echo "Current directory:"
                     pwd
 
@@ -173,10 +177,26 @@ pipeline {
                     test -f rust-interceptor/Dockerfile
 
                     echo ""
+                    echo "Check config.toml..."
+                    test -f config.toml
+
+                    echo ""
+                    echo "Check Zscaler CA file..."
+                    test -f zscaler-ca.cer
+                    grep "BEGIN CERTIFICATE" zscaler-ca.cer
+
+                    echo ""
                     echo "Build image:"
                     echo "${LOCAL_IMAGE}"
 
                     podman build \
+                      --build-arg EXTRA_CA_CERT=zscaler-ca.cer \
+                      --build-arg HTTP_PROXY="${HTTP_PROXY}" \
+                      --build-arg HTTPS_PROXY="${HTTPS_PROXY}" \
+                      --build-arg http_proxy="${HTTP_PROXY}" \
+                      --build-arg https_proxy="${HTTPS_PROXY}" \
+                      --build-arg NO_PROXY="${NO_PROXY}" \
+                      --build-arg no_proxy="${NO_PROXY}" \
                       -f rust-interceptor/Dockerfile \
                       -t "${LOCAL_IMAGE}" \
                       .
