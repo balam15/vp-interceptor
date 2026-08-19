@@ -10,7 +10,7 @@ pipeline {
         string(
             name: 'BRANCH',
             defaultValue: 'main',
-            description: 'Git branch to checkout from Azure'
+            description: 'Git branch to checkout from Azure DevOps'
         )
 
         choice(
@@ -22,13 +22,13 @@ pipeline {
         booleanParam(
             name: 'SKIP_BUILD',
             defaultValue: false,
-            description: 'Skip build stage'
+            description: 'Skip build image stage'
         )
 
         booleanParam(
             name: 'SKIP_PUSH',
             defaultValue: false,
-            description: 'Skip push to registry'
+            description: 'Skip push image to registry'
         )
     }
 
@@ -36,10 +36,11 @@ pipeline {
         APP_NAME        = 'vp-fms-interceptor'
         REMOTE_HOST     = '10.230.83.136'
         REGISTRY        = 'repouat.maybank.co.id:8082'
-        GIT_CREDENTIALS = '23834c4a-3c8a-47cb-bd51-c4662f9d64dd'
+
+        GIT_CREDENTIALS = 'endra-azure-token'
         SSH_CREDENTIALS = 'ssh-root'
 
-        GIT_URL         = 'https://maybankdigitalteam.visualstudio.com/VP%20Listener/_git/VP%20Listener'
+        GIT_URL         = 'https://MaybankDigitalTeam@dev.azure.com/MaybankDigitalTeam/VP%20Listener/_git/VP%20Listener'
     }
 
     stages {
@@ -68,6 +69,7 @@ pipeline {
                     echo "TARGET_ENVIRONMENT : ${TARGET_ENVIRONMENT}"
                     echo "REGISTRY           : ${REGISTRY}"
                     echo "REMOTE_HOST        : ${REMOTE_HOST}"
+                    echo "GIT_CREDENTIALS    : ${GIT_CREDENTIALS}"
                     echo "SKIP_BUILD         : ${SKIP_BUILD_VALUE}"
                     echo "SKIP_PUSH          : ${SKIP_PUSH_VALUE}"
                 '''
@@ -82,13 +84,12 @@ pipeline {
                     echo "Check tools on Jenkins agent..."
                     git --version
                     podman --version
-                    scp -V 2>&1 | head -1 || true
                     ssh -V 2>&1
                 '''
             }
         }
 
-        stage('Checkout Azure') {
+        stage('Checkout Azure DevOps') {
             steps {
                 checkout([
                     $class: 'GitSCM',
@@ -112,8 +113,13 @@ pipeline {
 
                     echo "Git checkout completed."
                     echo ""
+
                     echo "Current directory:"
                     pwd
+
+                    echo ""
+                    echo "Git remote:"
+                    git remote -v
 
                     echo ""
                     echo "Git branch:"
