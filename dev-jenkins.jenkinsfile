@@ -1,0 +1,217 @@
+pipeline {
+    agent { label 'docker-agent' }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    parameters {
+        string(
+            name: 'BRANCH',
+            defaultValue: 'main',
+            description: 'Git branch to checkout from Azure'
+        )
+
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['uat', 'staging', 'prod'],
+            description: 'Target environment'
+        )
+
+        booleanParam(
+            name: 'SKIP_BUILD',
+            defaultValue: false,
+            description: 'Skip build stage'
+        )
+
+        booleanParam(
+            name: 'SKIP_PUSH',
+            defaultValue: false,
+            description: 'Skip push to registry'
+        )
+    }
+
+    environment {
+        APP_NAME = 'vp-fms-interceptor'
+        REMOTE_HOST = '10.230.83.136'
+        REGISTRY = 'repouat.maybank.co.id:8082'
+        GIT_CREDENTIALS = '23834c4a-3c8a-47cb-bd51-c4662f9d64dd'
+        SSH_CREDENTIALS = 'ssh-root'
+    }
+
+    stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (!params.BRANCH?.trim()) {
+                        error "Parameter BRANCH is required"
+                    }
+
+                    if (params.SKIP_BUILD == true && params.SKIP_PUSH == false) {
+                        error "Invalid option: SKIP_BUILD=true but SKIP_PUSH=false. Push requires image tar from build stage."
+                    }
+                }
+
+                sh '''
+                    set -euo pipefail
+
+                    echo "APP_NAME    : ${APP_NAME}"
+                    echo "BRANCH      : ${BRANCH}"
+                    echo "ENVIRONMENT : ${ENVIRONMENT}"
+                    echo "REGISTRY    : ${REGISTRY}"
+                    echo "REMOTE_HOST : ${REMOTE_HOST}"
+                    echo "SKIP_BUILD  : ${SKIP_BUILD}"
+                    echo "SKIP_PUSH   : ${SKIP_PUSH}"
+                '''
+            }
+        }
+
+        stage('Checkout Azure') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${params.BRANCH}"]],
+                    userRemoteConfigs: [[
+                        credentialsId: "${env.GIT_CREDENTIALS}",
+                        url: 'https://maybankdigitalteam.visualstudio.com/VP%20Listener/_git/VP%20Listener'
+                    ]],
+                    extensions: [
+                        [$class: 'CloneOption',
+                            shallow: true,
+                            depth: 1,
+                            noTags: false,
+                            timeout: 30
+                        ]
+                    ]
+                ])
+
+                sh '''
+                    set -euo pipefail
+
+                    echo "Git checkout completed."
+                    git branch -a
+                    git log -1 --oneline
+                '''
+            }
+        }
+
+        stage('Prepare Image Metadata') {
+            steps {
+                script {
+                    env.SAFE_BRANCH = params.BRANCH.replaceAll('/', '-')
+                    env.GIT_SHORT_SHA = sh(
+                        script: 'git rev-parse --short=8 HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    env.TAG = "${env.SAFE_BRANCH}-${env.BUILD_NUMBER}-${env.GIT_SHORT_SHA}"
+                    env.LOCAL_IMAGE = "${env.APP_NAME}:${env.TAG}"
+                    env.REMOTE_IMAGE = "${env.REGISTRY}/${env.APP_NAME}:${env.TAG}"
+                    env.IMAGE_TAR = "${env.APP_NAME}_${env.TAG}.tar"
+                }
+
+                sh '''
+                    set -euo pipefail
+
+                    echo "SAFE_BRANCH  : ${SAFE_BRANCH}"
+                    echo "GIT_SHORT_SHA: ${GIT_SHORT_SHA}"
+                    echo "TAG          : ${TAG}"
+                    echo "LOCAL_IMAGE  : ${LOCAL_IMAGE}"
+                    echo "REMOTE_IMAGE : ${REMOTE_IMAGE}"
+                    echo "IMAGE_TAR    : ${IMAGE_TAR}"
+                '''
+            }
+        }
+
+        stage('Build Image Rust Interceptor') {
+            when {
+                expression { params.SKIP_BUILD != true }
+            }
+
+            steps {
+                sh '''
+                    set -euo pipefail
+
+                    echo "Build image:"
+                    echo "${LOCAL_IMAGE}"
+
+                    podman build \
+                      -f rust-interceptor/Dockerfile \
+                      -t "${LOCAL_IMAGE}" \
+                      .
+
+                    echo "Save image to tar:"
+                    podman save "${LOCAL_IMAGE}" -o "${IMAGE_TAR}"
+
+                    ls -lh "${IMAGE_TAR}"
+                '''
+            }
+        }
+
+        stage('Push Image via Remote Host') {
+            when {
+                expression { params.SKIP_PUSH != true }
+            }
+
+            steps {
+                sshagent(credentials: ["${env.SSH_CREDENTIALS}"]) {
+                    sh '''
+                        set -euo pipefail
+
+                        echo "Check local image tar:"
+                        ls -lh "${IMAGE_TAR}"
+
+                        echo "Copy image tar to remote host..."
+                        scp -o StrictHostKeyChecking=no \
+                          "${IMAGE_TAR}" \
+                          root@${REMOTE_HOST}:/tmp/
+
+                        echo "Load image on remote host..."
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
+                          "podman load -i /tmp/${IMAGE_TAR}"
+
+                        echo "Tag image for registry..."
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
+                          "podman image tag ${LOCAL_IMAGE} ${REMOTE_IMAGE}"
+
+                        echo "Push image to registry..."
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
+                          "podman push ${REMOTE_IMAGE}"
+
+                        echo "Clean remote image tar..."
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} \
+                          "rm -f /tmp/${IMAGE_TAR}"
+
+                        echo "Image pushed successfully:"
+                        echo "${REMOTE_IMAGE}"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+                set +e
+
+                echo "Cleanup local workspace image tar..."
+                rm -f "${APP_NAME}"_*.tar || true
+
+                echo "Current podman images:"
+                podman images | grep "${APP_NAME}" || true
+            '''
+
+            cleanWs()
+        }
+
+        success {
+            echo "Pipeline completed successfully."
+        }
+
+        failure {
+            echo "Pipeline failed."
+        }
+    }
+}
