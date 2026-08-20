@@ -107,8 +107,10 @@ pipeline {
 
                             docker load -i /tmp/${serviceName}_${params.imageTag}.tar
 
+                            docker images | grep ${serviceName}
+
                             docker tag \\
-                              ${serviceName}:${params.imageTag} \\
+                              localhost/${serviceName}:${params.imageTag} \\
                               ${repo}/${serviceName}:${params.imageTag}
 
                             docker push ${repo}/${serviceName}:${params.imageTag}
