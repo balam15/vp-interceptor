@@ -10,7 +10,7 @@ pipeline {
 
     parameters {
         string(name: 'branchName', defaultValue: 'master', description: 'Input Branch Name, e.g. master')
-        string(name: 'imageTag', defaultValue: 'x.x.x', description: 'Input Image Tag, e.g. master-1.0.0')
+        string(name: 'imageTag', defaultValue: 'rust-1.0.0', description: 'Input Image Tag, e.g. rust-1.0.0')
         choice(name: 'pushFlag', choices: ['false', 'true'], description: 'Flag for Push Image to Registry')
     }
 
@@ -99,17 +99,19 @@ pipeline {
                           ${serviceName}_${params.imageTag}.tar \\
                           root@${remoteHost}:/tmp/
 
-                        echo "Load, tag, and push image from remote host ..."
+                        echo "Load, tag, and push image from remote host using Docker ..."
                         ssh -o StrictHostKeyChecking=no root@${remoteHost} '
                             set -e
 
-                            podman load -i /tmp/${serviceName}_${params.imageTag}.tar
+                            docker --version
 
-                            podman tag \\
+                            docker load -i /tmp/${serviceName}_${params.imageTag}.tar
+
+                            docker tag \\
                               ${serviceName}:${params.imageTag} \\
                               ${repo}/${serviceName}:${params.imageTag}
 
-                            podman push ${repo}/${serviceName}:${params.imageTag}
+                            docker push ${repo}/${serviceName}:${params.imageTag}
 
                             rm -f /tmp/${serviceName}_${params.imageTag}.tar
                         '
