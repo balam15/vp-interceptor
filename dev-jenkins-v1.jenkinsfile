@@ -1,0 +1,318 @@
+pipeline {
+    agent {
+        label 'docker-agent'
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    parameters {
+        string(name: 'branchName', defaultValue: 'master', description: 'Input Branch Name, e.g. master')
+        string(name: 'imageTag', defaultValue: 'rust-1.0.0', description: 'Input Image Tag, e.g. rust-1.0.0')
+        string(name: 'replicaCount', defaultValue: '1', description: 'Input Replica Count')
+        choice(name: 'pushFlag', choices: ['false', 'true'], description: 'Flag for Push Image to Nexus Registry')
+        choice(name: 'deployFlag', choices: ['false', 'true'], description: 'Flag for Deploy to OpenShift')
+    }
+
+    environment {
+        repo            = "repouat.maybank.co.id:8082"
+        serviceName     = "vp-fms-interceptor"
+
+        dockerFile      = "rust-interceptor/Dockerfile"
+        zscalerCert     = "zscaler-ca.cer"
+
+        remoteHost      = "10.166.0.10"
+        sshCredentials  = "ssh-root"
+
+        kubeconfigId    = "vynamic-dev-1.kubeconfig"
+        ocpProject      = "vynamic-dev-1"
+        serviceAccount  = "vynamic-dev-1-sa"
+        imagePullSecret = "nexus-registry-secret"
+
+        proxyUrl        = "http://proxyzs.maybank.co.id:9443/"
+        noProxyList     = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,localhost,127.0.0.1"
+    }
+
+    stages {
+        stage('Confirm Execution') {
+            steps {
+                script {
+                    input message: "Please confirm this execution?"
+                }
+            }
+        }
+
+        stage('Checkout Source Code') {
+            steps {
+                checkout scm
+
+                sh """
+                    echo "Current Branch:"
+                    git branch -a
+
+                    echo "Latest Commit:"
+                    git log -1 --oneline
+                """
+            }
+        }
+
+        stage('Build Container Image') {
+            steps {
+                sh """
+                    set -e
+
+                    echo "Check required files ..."
+                    test -f ${dockerFile}
+                    test -f config.toml
+                    test -f ${zscalerCert}
+                    grep "BEGIN CERTIFICATE" ${zscalerCert}
+
+                    echo "Build container image ..."
+                    podman build \\
+                      --build-arg EXTRA_CA_CERT=${zscalerCert} \\
+                      --build-arg HTTP_PROXY=${proxyUrl} \\
+                      --build-arg HTTPS_PROXY=${proxyUrl} \\
+                      --build-arg http_proxy=${proxyUrl} \\
+                      --build-arg https_proxy=${proxyUrl} \\
+                      --build-arg NO_PROXY=${noProxyList} \\
+                      --build-arg no_proxy=${noProxyList} \\
+                      -f ${dockerFile} \\
+                      -t ${serviceName}:${params.imageTag} \\
+                      .
+
+                    echo "Save image to tar ..."
+                    podman save ${serviceName}:${params.imageTag} -o ${serviceName}_${params.imageTag}.tar
+
+                    echo "Validate image tar ..."
+                    ls -lh ${serviceName}_${params.imageTag}.tar
+                """
+            }
+        }
+
+        stage('Push Image to Nexus Registry') {
+            when {
+                expression { params.pushFlag == 'true' }
+            }
+
+            steps {
+                sshagent(credentials: [env.sshCredentials]) {
+                    sh """
+                        set -e
+
+                        echo "Copy image tar to remote Docker server ..."
+                        scp -o StrictHostKeyChecking=no \\
+                          ${serviceName}_${params.imageTag}.tar \\
+                          root@${remoteHost}:/tmp/
+
+                        echo "Load, tag, and push image from remote Docker server ..."
+                        ssh -o StrictHostKeyChecking=no root@${remoteHost} '
+                            set -e
+
+                            docker --version
+
+                            docker load -i /tmp/${serviceName}_${params.imageTag}.tar
+
+                            docker tag \\
+                              localhost/${serviceName}:${params.imageTag} \\
+                              ${repo}/${serviceName}:${params.imageTag}
+
+                            docker push ${repo}/${serviceName}:${params.imageTag}
+
+                            rm -f /tmp/${serviceName}_${params.imageTag}.tar
+                        '
+                    """
+                }
+            }
+        }
+
+        stage('Approval Deploy to OpenShift') {
+            when {
+                expression { params.deployFlag == 'true' }
+            }
+
+            steps {
+                script {
+                    def approvalMessage = """
+Please review deployment target:
+
+OCP Namespace : ${env.ocpProject}
+Deployment    : ${env.serviceName}
+Service       : ${env.serviceName}
+Image         : ${env.repo}/${env.serviceName}:${params.imageTag}
+Replicas      : ${params.replicaCount}
+Ports         : 9100, 9101
+Service Type  : ClusterIP
+"""
+                    input message: approvalMessage, ok: 'Deploy'
+                }
+            }
+        }
+
+        stage('Deploy to OpenShift') {
+            when {
+                expression { params.deployFlag == 'true' }
+            }
+
+            steps {
+                script {
+                    withCredentials([file(credentialsId: env.kubeconfigId, variable: 'kubeconfig')]) {
+                        sh """
+                            set -e
+
+                            export KUBECONFIG=\$kubeconfig
+
+                            echo "Check OCP access ..."
+                            oc whoami
+                            oc project ${ocpProject}
+
+                            echo "Apply Deployment ..."
+                            oc apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${serviceName}
+  namespace: ${ocpProject}
+  labels:
+    app: ${serviceName}
+spec:
+  replicas: ${params.replicaCount}
+  selector:
+    matchLabels:
+      app: ${serviceName}
+  template:
+    metadata:
+      labels:
+        app: ${serviceName}
+    spec:
+      serviceAccountName: ${serviceAccount}
+      imagePullSecrets:
+        - name: ${imagePullSecret}
+      containers:
+        - name: ${serviceName}
+          image: ${repo}/${serviceName}:${params.imageTag}
+          imagePullPolicy: Always
+          ports:
+            - name: tcp-main
+              containerPort: 9100
+              protocol: TCP
+            - name: http-admin
+              containerPort: 9101
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9101
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9101
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+EOF
+
+                            echo "Apply Service ..."
+                            oc apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${serviceName}
+  namespace: ${ocpProject}
+  labels:
+    app: ${serviceName}
+spec:
+  type: ClusterIP
+  selector:
+    app: ${serviceName}
+  ports:
+    - name: tcp-main
+      port: 9100
+      targetPort: 9100
+      protocol: TCP
+    - name: http-admin
+      port: 9101
+      targetPort: 9101
+      protocol: TCP
+EOF
+
+                            echo "Rollout status ..."
+                            oc rollout status deployment/${serviceName} -n ${ocpProject} --timeout=180s
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Verify OpenShift Deployment') {
+            when {
+                expression { params.deployFlag == 'true' }
+            }
+
+            steps {
+                script {
+                    withCredentials([file(credentialsId: env.kubeconfigId, variable: 'kubeconfig')]) {
+                        sh """
+                            set -e
+
+                            export KUBECONFIG=\$kubeconfig
+
+                            echo "Check Deployment ..."
+                            oc get deployment ${serviceName} -n ${ocpProject}
+
+                            echo "Check Pod ..."
+                            oc get pod -n ${ocpProject} -l app=${serviceName} -o wide
+
+                            echo "Check Service ..."
+                            oc get svc ${serviceName} -n ${ocpProject}
+
+                            echo "Check Endpoint ..."
+                            oc get endpoints ${serviceName} -n ${ocpProject}
+
+                            echo "Check Pod Logs ..."
+                            POD_NAME=\$(oc get pod -n ${ocpProject} -l app=${serviceName} -o jsonpath='{.items[0].metadata.name}')
+                            oc logs -n ${ocpProject} \$POD_NAME --tail=100
+
+                            echo "Check Health Endpoint ..."
+                            oc exec -n ${ocpProject} \$POD_NAME -- wget -qO- http://127.0.0.1:9101/healthz || true
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh """
+                set +e
+
+                rm -f ${serviceName}_*.tar
+                podman images | grep ${serviceName} || true
+            """
+
+            cleanWs()
+        }
+
+        success {
+            echo 'Pipeline Completed'
+        }
+
+        failure {
+            echo 'Pipeline Failed'
+        }
+    }
+}
