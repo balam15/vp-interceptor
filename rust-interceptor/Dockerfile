@@ -41,8 +41,8 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------- build stage
-FROM rust:1.97-alpine AS build
-#FROM repouat.maybank.co.id:8082/rust:1.97-alpine AS build
+#FROM rust:1.97-alpine AS build
+FROM repo.maybank.co.id/docker-proxy/rust:1.97-alpine AS build
 
 # Path, relative to the build context, of an extra root CA to trust. The default
 # is a file that is always present and is not a certificate, so the COPY always
@@ -90,7 +90,7 @@ RUN touch src/main.rs \
 # -------------------------------------------------------------- runtime stage
 # Alpine rather than scratch: busybox gives the HEALTHCHECK below a wget, which
 # is worth ~8 MB on a component that sits inline on an authorization path.
-FROM alpine:3.21
+FROM repo.maybank.co.id/docker-proxy/alpine:3.21
 #FROM repouat.maybank.co.id:8082/alpine:3.21
 
 ARG EXTRA_CA_CERT=config.toml
