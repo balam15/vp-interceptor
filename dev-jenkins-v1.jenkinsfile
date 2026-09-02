@@ -17,22 +17,21 @@ pipeline {
     }
 
     environment {
-        repo            = "repouat.maybank.co.id:8082"
-        serviceName     = "vp-fms-interceptor"
+        repo           = "repo.maybank.co.id"
+        serviceName    = "vp-fms-interceptor"
 
-        dockerFile      = "rust-interceptor/Dockerfile"
-        zscalerCert     = "zscaler-ca.cer"
+        dockerFile     = "rust-interceptor/Dockerfile"
+        zscalerCert    = "zscaler-ca.cer"
 
-        remoteHost      = "10.166.0.10"
-        sshCredentials  = "ssh-root"
+        remoteHost     = "10.186.0.10"
+        sshCredentials = "ssh-root"
 
-        kubeconfigId    = "vynamic-dev-1.kubeconfig"
-        ocpProject      = "vynamic-dev-1"
-        serviceAccount  = "vynamic-dev-1-sa"
-        imagePullSecret = "nexus-registry-secret"
+        kubeconfigId   = "vynamic-uat-1.kubeconfig"
+        ocpProject     = "vynamic-uat-1"
+        serviceAccount = "vynamic-uat-1-sa"
 
-        proxyUrl        = "http://proxyzs.maybank.co.id:9443/"
-        noProxyList     = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,localhost,127.0.0.1"
+        proxyUrl       = "http://proxyzs.maybank.co.id:9443/"
+        noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,localhost,127.0.0.1"
     }
 
     stages {
@@ -101,12 +100,12 @@ pipeline {
                     sh """
                         set -e
 
-                        echo "Copy image tar to remote Docker server ..."
+                        echo "Copy image tar to remote server ..."
                         scp -o StrictHostKeyChecking=no \\
                           ${serviceName}_${params.imageTag}.tar \\
                           root@${remoteHost}:/tmp/
 
-                        echo "Load, tag, and push image from remote Docker server ..."
+                        echo "Load, tag, and push image from remote server using Docker ..."
                         ssh -o StrictHostKeyChecking=no root@${remoteHost} '
                             set -e
 
@@ -144,6 +143,11 @@ Image         : ${env.repo}/${env.serviceName}:${params.imageTag}
 Replicas      : ${params.replicaCount}
 Ports         : 9100, 9101
 Service Type  : ClusterIP
+Kubeconfig    : ${env.kubeconfigId}
+CPU Request   : 500m
+Memory Request: 256Mi
+CPU Limit     : 1
+Memory Limit  : 512Mi
 """
                     input message: approvalMessage, ok: 'Deploy'
                 }
@@ -156,19 +160,28 @@ Service Type  : ClusterIP
             }
 
             steps {
-                script {
+                sshagent(credentials: [env.sshCredentials]) {
                     withCredentials([file(credentialsId: env.kubeconfigId, variable: 'kubeconfig')]) {
                         sh """
                             set -e
 
-                            export KUBECONFIG=\$kubeconfig
+                            echo "Copy kubeconfig to remote server ..."
+                            scp -o StrictHostKeyChecking=no \\
+                              "\$kubeconfig" \\
+                              root@${remoteHost}:/tmp/${kubeconfigId}-${BUILD_NUMBER}
 
-                            echo "Check OCP access ..."
-                            oc whoami
-                            oc project ${ocpProject}
+                            echo "Deploy application to OpenShift ..."
+                            ssh -o StrictHostKeyChecking=no root@${remoteHost} '
+                                set -e
 
-                            echo "Apply Deployment ..."
-                            oc apply -f - <<EOF
+                                export KUBECONFIG=/tmp/${kubeconfigId}-${BUILD_NUMBER}
+
+                                echo "Check OCP access ..."
+                                oc whoami
+                                oc project ${ocpProject}
+
+                                echo "Apply Deployment ..."
+                                oc apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -187,8 +200,6 @@ spec:
         app: ${serviceName}
     spec:
       serviceAccountName: ${serviceAccount}
-      imagePullSecrets:
-        - name: ${imagePullSecret}
       containers:
         - name: ${serviceName}
           image: ${repo}/${serviceName}:${params.imageTag}
@@ -218,15 +229,15 @@ spec:
             failureThreshold: 3
           resources:
             requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
               cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
               memory: "512Mi"
 EOF
 
-                            echo "Apply Service ..."
-                            oc apply -f - <<EOF
+                                echo "Apply Service ..."
+                                oc apply -f - <<EOF
 apiVersion: v1
 kind: Service
 metadata:
@@ -249,8 +260,12 @@ spec:
       protocol: TCP
 EOF
 
-                            echo "Rollout status ..."
-                            oc rollout status deployment/${serviceName} -n ${ocpProject} --timeout=180s
+                                echo "Rollout status ..."
+                                oc rollout status deployment/${serviceName} -n ${ocpProject} --timeout=180s
+
+                                echo "Remove temporary kubeconfig ..."
+                                rm -f /tmp/${kubeconfigId}-${BUILD_NUMBER}
+                            '
                         """
                     }
                 }
@@ -263,31 +278,44 @@ EOF
             }
 
             steps {
-                script {
+                sshagent(credentials: [env.sshCredentials]) {
                     withCredentials([file(credentialsId: env.kubeconfigId, variable: 'kubeconfig')]) {
                         sh """
                             set -e
 
-                            export KUBECONFIG=\$kubeconfig
+                            echo "Copy kubeconfig to remote server ..."
+                            scp -o StrictHostKeyChecking=no \\
+                              "\$kubeconfig" \\
+                              root@${remoteHost}:/tmp/${kubeconfigId}-${BUILD_NUMBER}
 
-                            echo "Check Deployment ..."
-                            oc get deployment ${serviceName} -n ${ocpProject}
+                            echo "Verify OpenShift deployment ..."
+                            ssh -o StrictHostKeyChecking=no root@${remoteHost} '
+                                set -e
 
-                            echo "Check Pod ..."
-                            oc get pod -n ${ocpProject} -l app=${serviceName} -o wide
+                                export KUBECONFIG=/tmp/${kubeconfigId}-${BUILD_NUMBER}
 
-                            echo "Check Service ..."
-                            oc get svc ${serviceName} -n ${ocpProject}
+                                echo "Check Deployment ..."
+                                oc get deployment ${serviceName} -n ${ocpProject}
 
-                            echo "Check Endpoint ..."
-                            oc get endpoints ${serviceName} -n ${ocpProject}
+                                echo "Check Pod ..."
+                                oc get pod -n ${ocpProject} -l app=${serviceName} -o wide
 
-                            echo "Check Pod Logs ..."
-                            POD_NAME=\$(oc get pod -n ${ocpProject} -l app=${serviceName} -o jsonpath='{.items[0].metadata.name}')
-                            oc logs -n ${ocpProject} \$POD_NAME --tail=100
+                                echo "Check Service ..."
+                                oc get svc ${serviceName} -n ${ocpProject}
 
-                            echo "Check Health Endpoint ..."
-                            oc exec -n ${ocpProject} \$POD_NAME -- wget -qO- http://127.0.0.1:9101/healthz || true
+                                echo "Check Endpoint ..."
+                                oc get endpoints ${serviceName} -n ${ocpProject}
+
+                                echo "Check Pod Logs ..."
+                                POD_NAME=\$(oc get pod -n ${ocpProject} -l app=${serviceName} -o jsonpath="{.items[0].metadata.name}")
+                                oc logs -n ${ocpProject} \$POD_NAME --tail=100 || true
+
+                                echo "Check Health Endpoint ..."
+                                oc exec -n ${ocpProject} \$POD_NAME -- wget -qO- http://127.0.0.1:9101/healthz || true
+
+                                echo "Remove temporary kubeconfig ..."
+                                rm -f /tmp/${kubeconfigId}-${BUILD_NUMBER}
+                            '
                         """
                     }
                 }
