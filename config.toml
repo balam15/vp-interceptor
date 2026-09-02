@@ -120,4 +120,5 @@ queue_buffering_max_kbytes = 262144
 
 [admin]
 # Prometheus text format on /metrics, JSON on /, liveness on /healthz.
-addr = "127.0.0.1:9101"
+#addr = "127.0.0.1:9101"
+addr = "0.0.0.0:9101"
