@@ -27,11 +27,11 @@ pipeline {
         sshCredentials = "ssh-root"
 
         kubeconfigId   = "vynamic-uat-1.kubeconfig"
-        ocpProject     = "vynamic-uat-1"
-        serviceAccount = "vynamic-uat-1-sa"
+        ocpProject     = "vynamic-uat-2"
+        serviceAccount = "vynamic-uat-2-sa"
 
         proxyUrl       = "http://proxyzs.maybank.co.id:9443/"
-        noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,localhost,127.0.0.1"
+        noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,10.186.0.0/16,localhost,127.0.0.1"
     }
 
     stages {
@@ -68,6 +68,9 @@ pipeline {
                     test -f ${zscalerCert}
                     grep "BEGIN CERTIFICATE" ${zscalerCert}
 
+                    echo "Check Dockerfile base image ..."
+                    grep -n "^FROM" ${dockerFile}
+
                     echo "Build container image ..."
                     podman build \\
                       --build-arg EXTRA_CA_CERT=${zscalerCert} \\
@@ -100,25 +103,33 @@ pipeline {
                     sh """
                         set -e
 
-                        echo "Copy image tar to remote server ..."
+                        echo "Copy image tar to remote bastion ..."
                         scp -o StrictHostKeyChecking=no \\
                           ${serviceName}_${params.imageTag}.tar \\
                           root@${remoteHost}:/tmp/
 
-                        echo "Load, tag, and push image from remote server using Docker ..."
+                        echo "Load, tag, and push image from remote bastion using Podman ..."
                         ssh -o StrictHostKeyChecking=no root@${remoteHost} '
                             set -e
 
-                            docker --version
+                            echo "Check Podman version ..."
+                            podman --version
 
-                            docker load -i /tmp/${serviceName}_${params.imageTag}.tar
+                            echo "Load image tar ..."
+                            podman load -i /tmp/${serviceName}_${params.imageTag}.tar
 
-                            docker tag \\
+                            echo "Check loaded image ..."
+                            podman images | grep ${serviceName}
+
+                            echo "Tag image to Nexus registry ..."
+                            podman tag \\
                               localhost/${serviceName}:${params.imageTag} \\
                               ${repo}/${serviceName}:${params.imageTag}
 
-                            docker push ${repo}/${serviceName}:${params.imageTag}
+                            echo "Push image to Nexus registry ..."
+                            podman push ${repo}/${serviceName}:${params.imageTag}
 
+                            echo "Remove temporary image tar ..."
                             rm -f /tmp/${serviceName}_${params.imageTag}.tar
                         '
                     """
@@ -136,18 +147,20 @@ pipeline {
                     def approvalMessage = """
 Please review deployment target:
 
-OCP Namespace : ${env.ocpProject}
-Deployment    : ${env.serviceName}
-Service       : ${env.serviceName}
-Image         : ${env.repo}/${env.serviceName}:${params.imageTag}
-Replicas      : ${params.replicaCount}
-Ports         : 9100, 9101
-Service Type  : ClusterIP
-Kubeconfig    : ${env.kubeconfigId}
-CPU Request   : 500m
-Memory Request: 256Mi
-CPU Limit     : 1
-Memory Limit  : 512Mi
+OCP Namespace  : ${env.ocpProject}
+Deployment     : ${env.serviceName}
+Service        : ${env.serviceName}
+Image          : ${env.repo}/${env.serviceName}:${params.imageTag}
+Replicas       : ${params.replicaCount}
+Ports          : 9100, 9101
+Service Type   : ClusterIP
+Kubeconfig     : ${env.kubeconfigId}
+ServiceAccount : ${env.serviceAccount}
+
+CPU Request    : 500m
+Memory Request : 256Mi
+CPU Limit      : 1
+Memory Limit   : 512Mi
 """
                     input message: approvalMessage, ok: 'Deploy'
                 }
@@ -165,7 +178,7 @@ Memory Limit  : 512Mi
                         sh """
                             set -e
 
-                            echo "Copy kubeconfig to remote server ..."
+                            echo "Copy kubeconfig to remote bastion ..."
                             scp -o StrictHostKeyChecking=no \\
                               "\$kubeconfig" \\
                               root@${remoteHost}:/tmp/${kubeconfigId}-${BUILD_NUMBER}
@@ -179,6 +192,9 @@ Memory Limit  : 512Mi
                                 echo "Check OCP access ..."
                                 oc whoami
                                 oc project ${ocpProject}
+
+                                echo "Check service account ..."
+                                oc get sa ${serviceAccount} -n ${ocpProject}
 
                                 echo "Apply Deployment ..."
                                 oc apply -f - <<EOF
@@ -283,7 +299,7 @@ EOF
                         sh """
                             set -e
 
-                            echo "Copy kubeconfig to remote server ..."
+                            echo "Copy kubeconfig to remote bastion ..."
                             scp -o StrictHostKeyChecking=no \\
                               "\$kubeconfig" \\
                               root@${remoteHost}:/tmp/${kubeconfigId}-${BUILD_NUMBER}
