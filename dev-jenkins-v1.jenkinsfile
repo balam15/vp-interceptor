@@ -17,8 +17,9 @@ pipeline {
     }
 
     environment {
-        repo           = "repo.maybank.co.id"
+        repo           = "repouat.maybank.co.id:8082"
         serviceName    = "vp-fms-interceptor"
+        imageRepository = "repouat.maybank.co.id:8082/vp-fms-interceptor"
 
         dockerFile     = "rust-interceptor/Dockerfile"
         zscalerCert    = "zscaler-ca.cer"
@@ -121,13 +122,13 @@ pipeline {
                             echo "Check loaded image ..."
                             podman images | grep ${serviceName}
 
-                            echo "Tag image to Nexus registry ..."
+                            echo "Tag image to Nexus UAT registry ..."
                             podman tag \\
                               localhost/${serviceName}:${params.imageTag} \\
-                              ${repo}/${serviceName}:${params.imageTag}
+                              ${imageRepository}:${params.imageTag}
 
-                            echo "Push image to Nexus registry ..."
-                            podman push ${repo}/${serviceName}:${params.imageTag}
+                            echo "Push image to Nexus UAT registry ..."
+                            podman push ${imageRepository}:${params.imageTag}
 
                             echo "Remove temporary image tar ..."
                             rm -f /tmp/${serviceName}_${params.imageTag}.tar
@@ -150,7 +151,7 @@ Please review deployment target:
 OCP Namespace  : ${env.ocpProject}
 Deployment     : ${env.serviceName}
 Service        : ${env.serviceName}
-Image          : ${env.repo}/${env.serviceName}:${params.imageTag}
+Image          : ${env.imageRepository}:${params.imageTag}
 Replicas       : ${params.replicaCount}
 Ports          : 9100, 9101
 Service Type   : ClusterIP
@@ -216,9 +217,12 @@ spec:
         app: ${serviceName}
     spec:
       serviceAccountName: ${serviceAccount}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ${serviceName}
-          image: ${repo}/${serviceName}:${params.imageTag}
+          image: ${imageRepository}:${params.imageTag}
           imagePullPolicy: Always
           ports:
             - name: tcp-main
@@ -243,6 +247,12 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 3
             failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
           resources:
             requests:
               cpu: "500m"
