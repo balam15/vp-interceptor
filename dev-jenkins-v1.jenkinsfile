@@ -28,8 +28,8 @@ pipeline {
         sshCredentials = "ssh-root"
 
         kubeconfigId   = "vynamic-uat-1.kubeconfig"
-        ocpProject     = "vynamic-uat-2"
-        serviceAccount = "vynamic-uat-2-sa"
+        ocpProject     = "vynamic-uat-1"
+        serviceAccount = "vynamic-uat-1-sa"
 
         proxyUrl       = "http://proxyzs.maybank.co.id:9443/"
         noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,10.186.0.0/16,localhost,127.0.0.1"
