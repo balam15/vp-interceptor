@@ -17,22 +17,27 @@ pipeline {
     }
 
     environment {
-        repo           = "repouat.maybank.co.id:8082"
-        serviceName    = "vp-fms-interceptor"
+        repo            = "repouat.maybank.co.id:8082"
+        serviceName     = "vp-fms-interceptor"
         imageRepository = "repouat.maybank.co.id:8082/vp-fms-interceptor"
 
-        dockerFile     = "rust-interceptor/Dockerfile"
-        zscalerCert    = "zscaler-ca.cer"
+        dockerFile      = "rust-interceptor/Dockerfile"
+        zscalerCert     = "zscaler-ca.cer"
 
-        remoteHost     = "10.186.0.10"
-        sshCredentials = "ssh-root"
+        remoteHost      = "10.186.0.10"
+        sshCredentials  = "ssh-root"
 
-        kubeconfigId   = "vynamic-uat-1.kubeconfig"
-        ocpProject     = "vynamic-uat-1"
-        serviceAccount = "vynamic-uat-1-sa"
+        kubeconfigId    = "vynamic-uat-1.kubeconfig"
+        ocpProject      = "vynamic-uat-1"
+        serviceAccount  = "vynamic-uat-1-sa"
 
-        proxyUrl       = "http://proxyzs.maybank.co.id:9443/"
-        noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,10.186.0.0/16,localhost,127.0.0.1"
+        logPvcName      = "vp-fms-interceptor-log-pvc"
+        logMountPath    = "/var/log/vp-fms-interceptor"
+        storageClass    = "netapp-files-dynamic"
+        pvcSize         = "5Gi"
+
+        proxyUrl        = "http://proxyzs.maybank.co.id:9443/"
+        noProxyList     = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,10.166.0.0/16,10.186.0.0/16,localhost,127.0.0.1"
     }
 
     stages {
@@ -158,6 +163,13 @@ Service Type   : ClusterIP
 Kubeconfig     : ${env.kubeconfigId}
 ServiceAccount : ${env.serviceAccount}
 
+Log PVC        : ${env.logPvcName}
+Log Mount Path : ${env.logMountPath}
+StorageClass   : ${env.storageClass}
+PVC Size       : ${env.pvcSize}
+Access Mode    : ReadWriteMany
+Volume Mode    : Filesystem
+
 CPU Request    : 500m
 Memory Request : 256Mi
 CPU Limit      : 1
@@ -197,7 +209,26 @@ Memory Limit   : 512Mi
                                 echo "Check service account ..."
                                 oc get sa ${serviceAccount} -n ${ocpProject}
 
-                                echo "Apply Deployment ..."
+                                echo "Apply Log PVC ..."
+                                oc apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${logPvcName}
+  namespace: ${ocpProject}
+  labels:
+    app: ${serviceName}
+spec:
+  accessModes:
+    - ReadWriteMany
+  volumeMode: Filesystem
+  storageClassName: ${storageClass}
+  resources:
+    requests:
+      storage: ${pvcSize}
+EOF
+
+                                echo "Apply Deployment with PVC mount ..."
                                 oc apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -220,10 +251,20 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        fsGroup: 65532
       containers:
         - name: ${serviceName}
           image: ${imageRepository}:${params.imageTag}
           imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              mkdir -p ${logMountPath}
+              LOG_FILE="${logMountPath}/\\\${HOSTNAME}.log"
+              echo "Starting ${serviceName}, log file: \\\${LOG_FILE}"
+              /usr/local/bin/${serviceName} /etc/vp-fms/config.toml 2>&1 | tee -a "\\\${LOG_FILE}"
           ports:
             - name: tcp-main
               containerPort: 9100
@@ -231,25 +272,29 @@ spec:
             - name: http-admin
               containerPort: 9101
               protocol: TCP
+          volumeMounts:
+            - name: app-log
+              mountPath: ${logMountPath}
           readinessProbe:
             httpGet:
               path: /healthz
               port: 9101
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 10
             timeoutSeconds: 3
-            failureThreshold: 3
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /healthz
               port: 9101
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 30
             timeoutSeconds: 3
             failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
+            runAsUser: 65532
             capabilities:
               drop:
                 - ALL
@@ -260,6 +305,10 @@ spec:
             limits:
               cpu: "1"
               memory: "512Mi"
+      volumes:
+        - name: app-log
+          persistentVolumeClaim:
+            claimName: ${logPvcName}
 EOF
 
                                 echo "Apply Service ..."
@@ -285,6 +334,9 @@ spec:
       targetPort: 9101
       protocol: TCP
 EOF
+
+                                echo "Check PVC ..."
+                                oc get pvc ${logPvcName} -n ${ocpProject}
 
                                 echo "Rollout status ..."
                                 oc rollout status deployment/${serviceName} -n ${ocpProject} --timeout=180s
@@ -332,9 +384,27 @@ EOF
                                 echo "Check Endpoint ..."
                                 oc get endpoints ${serviceName} -n ${ocpProject}
 
-                                echo "Check Pod Logs ..."
+                                echo "Check PVC ..."
+                                oc get pvc ${logPvcName} -n ${ocpProject}
+
+                                echo "Check Deployment volumeMounts ..."
+                                oc get deploy ${serviceName} -n ${ocpProject} -o yaml | grep -A10 -B5 "volumeMounts" || true
+
+                                echo "Check Deployment volumes ..."
+                                oc get deploy ${serviceName} -n ${ocpProject} -o yaml | grep -A10 -B5 "volumes" || true
+
+                                echo "Get running pod name ..."
                                 POD_NAME=\$(oc get pod -n ${ocpProject} -l app=${serviceName} -o jsonpath="{.items[0].metadata.name}")
+
+                                echo "Check Pod Logs from stdout ..."
                                 oc logs -n ${ocpProject} \$POD_NAME --tail=100 || true
+
+                                echo "Check PVC mount inside pod ..."
+                                oc exec -n ${ocpProject} \$POD_NAME -- df -h ${logMountPath} || true
+                                oc exec -n ${ocpProject} \$POD_NAME -- ls -lah ${logMountPath} || true
+
+                                echo "Check log file in PVC ..."
+                                oc exec -n ${ocpProject} \$POD_NAME -- sh -c "ls -lah ${logMountPath}; tail -50 ${logMountPath}/\\\$HOSTNAME.log" || true
 
                                 echo "Check Health Endpoint ..."
                                 oc exec -n ${ocpProject} \$POD_NAME -- wget -qO- http://127.0.0.1:9101/healthz || true
