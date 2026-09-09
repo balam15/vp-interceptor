@@ -237,7 +237,6 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
-        fsGroup: 65532
       containers:
         - name: ${serviceName}
           image: ${imageRepository}:${params.imageTag}
@@ -280,7 +279,6 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
-            runAsUser: 65532
             capabilities:
               drop:
                 - ALL
