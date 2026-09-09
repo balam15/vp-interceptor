@@ -321,9 +321,8 @@ spec:
       protocol: TCP
 EOF
 
-                                echo "Check rollout status ..."
+                                echo "Check PVC status ..."
                                 oc get pvc ${logPvcName} -n ${ocpProject}
-                                oc rollout status deployment/${serviceName} -n ${ocpProject} --timeout=180s
 
                                 rm -f /tmp/${kubeconfigId}-${BUILD_NUMBER}
                             '
