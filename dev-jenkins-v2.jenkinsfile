@@ -118,24 +118,16 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no root@${remoteHost} '
                             set -e
 
-                            echo "Check Podman version ..."
                             podman --version
 
-                            echo "Load image tar ..."
                             podman load -i /tmp/${serviceName}_${params.imageTag}.tar
 
-                            echo "Check loaded image ..."
-                            podman images | grep ${serviceName}
-
-                            echo "Tag image to Nexus UAT registry ..."
                             podman tag \\
                               localhost/${serviceName}:${params.imageTag} \\
                               ${imageRepository}:${params.imageTag}
 
-                            echo "Push image to Nexus UAT registry ..."
                             podman push ${imageRepository}:${params.imageTag}
 
-                            echo "Remove temporary image tar ..."
                             rm -f /tmp/${serviceName}_${params.imageTag}.tar
                         '
                     """
@@ -158,8 +150,6 @@ Deployment     : ${env.serviceName}
 Service        : ${env.serviceName}
 Image          : ${env.imageRepository}:${params.imageTag}
 Replicas       : ${params.replicaCount}
-Ports          : 9100, 9101
-Service Type   : ClusterIP
 Kubeconfig     : ${env.kubeconfigId}
 ServiceAccount : ${env.serviceAccount}
 
@@ -202,12 +192,8 @@ Memory Limit   : 512Mi
 
                                 export KUBECONFIG=/tmp/${kubeconfigId}-${BUILD_NUMBER}
 
-                                echo "Check OCP access ..."
                                 oc whoami
                                 oc project ${ocpProject}
-
-                                echo "Check service account ..."
-                                oc get sa ${serviceAccount} -n ${ocpProject}
 
                                 echo "Apply Log PVC ..."
                                 oc apply -f - <<EOF
@@ -228,7 +214,7 @@ spec:
       storage: ${pvcSize}
 EOF
 
-                                echo "Apply Deployment with PVC mount ..."
+                                echo "Apply Deployment ..."
                                 oc apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -335,81 +321,10 @@ spec:
       protocol: TCP
 EOF
 
-                                echo "Check PVC ..."
+                                echo "Check rollout status ..."
                                 oc get pvc ${logPvcName} -n ${ocpProject}
-
-                                echo "Rollout status ..."
                                 oc rollout status deployment/${serviceName} -n ${ocpProject} --timeout=180s
 
-                                echo "Remove temporary kubeconfig ..."
-                                rm -f /tmp/${kubeconfigId}-${BUILD_NUMBER}
-                            '
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Verify OpenShift Deployment') {
-            when {
-                expression { params.deployFlag == 'true' }
-            }
-
-            steps {
-                sshagent(credentials: [env.sshCredentials]) {
-                    withCredentials([file(credentialsId: env.kubeconfigId, variable: 'kubeconfig')]) {
-                        sh """
-                            set -e
-
-                            echo "Copy kubeconfig to remote bastion ..."
-                            scp -o StrictHostKeyChecking=no \\
-                              "\$kubeconfig" \\
-                              root@${remoteHost}:/tmp/${kubeconfigId}-${BUILD_NUMBER}
-
-                            echo "Verify OpenShift deployment ..."
-                            ssh -o StrictHostKeyChecking=no root@${remoteHost} '
-                                set -e
-
-                                export KUBECONFIG=/tmp/${kubeconfigId}-${BUILD_NUMBER}
-
-                                echo "Check Deployment ..."
-                                oc get deployment ${serviceName} -n ${ocpProject}
-
-                                echo "Check Pod ..."
-                                oc get pod -n ${ocpProject} -l app=${serviceName} -o wide
-
-                                echo "Check Service ..."
-                                oc get svc ${serviceName} -n ${ocpProject}
-
-                                echo "Check Endpoint ..."
-                                oc get endpoints ${serviceName} -n ${ocpProject}
-
-                                echo "Check PVC ..."
-                                oc get pvc ${logPvcName} -n ${ocpProject}
-
-                                echo "Check Deployment volumeMounts ..."
-                                oc get deploy ${serviceName} -n ${ocpProject} -o yaml | grep -A10 -B5 "volumeMounts" || true
-
-                                echo "Check Deployment volumes ..."
-                                oc get deploy ${serviceName} -n ${ocpProject} -o yaml | grep -A10 -B5 "volumes" || true
-
-                                echo "Get running pod name ..."
-                                POD_NAME=\$(oc get pod -n ${ocpProject} -l app=${serviceName} -o jsonpath="{.items[0].metadata.name}")
-
-                                echo "Check Pod Logs from stdout ..."
-                                oc logs -n ${ocpProject} \$POD_NAME --tail=100 || true
-
-                                echo "Check PVC mount inside pod ..."
-                                oc exec -n ${ocpProject} \$POD_NAME -- df -h ${logMountPath} || true
-                                oc exec -n ${ocpProject} \$POD_NAME -- ls -lah ${logMountPath} || true
-
-                                echo "Check log file in PVC ..."
-                                oc exec -n ${ocpProject} \$POD_NAME -- sh -c "ls -lah ${logMountPath}; tail -50 ${logMountPath}/\\\$HOSTNAME.log" || true
-
-                                echo "Check Health Endpoint ..."
-                                oc exec -n ${ocpProject} \$POD_NAME -- wget -qO- http://127.0.0.1:9101/healthz || true
-
-                                echo "Remove temporary kubeconfig ..."
                                 rm -f /tmp/${kubeconfigId}-${BUILD_NUMBER}
                             '
                         """
@@ -423,9 +338,7 @@ EOF
         always {
             sh """
                 set +e
-
                 rm -f ${serviceName}_*.tar
-                podman images | grep ${serviceName} || true
             """
 
             cleanWs()
