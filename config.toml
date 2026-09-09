@@ -94,7 +94,7 @@ max_fields = 64
 
 [kafka]
 enabled = true
-brokers = "localhost:9092"
+brokers = "10.235.83.34:9092"
 topic = "vp.fms.iso8583"
 # json -> {"conn_id":..,"direction":..,"seq":..,"peer":..,"ts_ms":..,
 #          "length":..,"encoding":..,"payload":".."}
