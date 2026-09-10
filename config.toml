@@ -13,7 +13,7 @@ max_connections = 4096
 
 [upstream]
 # The real FMS endpoint.
-addr = "127.0.0.1:8583"
+addr = "192.168.249.150:11682"
 connect_timeout_ms = 3000
 
 [proxy]
