@@ -138,11 +138,29 @@ type Kafka struct {
 	MessageTimeoutMs          int    `toml:"message_timeout_ms"`
 	QueueBufferingMaxMessages int    `toml:"queue_buffering_max_messages"`
 	QueueBufferingMaxKbytes   int    `toml:"queue_buffering_max_kbytes"`
+	Filter                    KafkaFilter `toml:"filter"`
 	// Properties is the librdkafka-style escape hatch shared with the Rust
 	// build. See internal/kafka: the security-related keys are translated to
 	// their kafka-go equivalents, and anything unrecognised is logged and
 	// ignored rather than silently dropped.
 	Properties map[string]string `toml:"properties"`
+}
+
+// KafkaFilter is a boolean expression over Kafka frames.
+//
+// any_of = OR across groups, all_of = AND within a group, and mti/de70 are
+// exact-match sets.
+type KafkaFilter struct {
+	AnyOf []KafkaFilterAnyOf `toml:"any_of"`
+}
+
+type KafkaFilterAnyOf struct {
+	AllOf []KafkaFilterAllOf `toml:"all_of"`
+}
+
+type KafkaFilterAllOf struct {
+	MTI  []string `toml:"mti"`
+	DE70 []string `toml:"de70"`
 }
 
 type Admin struct {
@@ -290,8 +308,47 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("kafka.payload_encoding must be base64|hex|utf8, got %q",
 			c.Kafka.PayloadEncoding)
 	}
+	if err := validateKafkaFilter(c.Kafka.Filter); err != nil {
+		return err
+	}
 	if c.Timing.MaxPending < 1 {
 		return fmt.Errorf("timing.max_pending must be >= 1")
 	}
 	return nil
+}
+
+func validateKafkaFilter(filter KafkaFilter) error {
+	if len(filter.AnyOf) == 0 {
+		return nil
+	}
+	for i, any := range filter.AnyOf {
+		if len(any.AllOf) == 0 {
+			return fmt.Errorf("kafka.filter.any_of[%d].all_of must contain at least one rule", i)
+		}
+		for j, all := range any.AllOf {
+			if len(all.MTI) == 0 && len(all.DE70) == 0 {
+				return fmt.Errorf("kafka.filter.any_of[%d].all_of[%d] must set mti and/or de70", i, j)
+			}
+			for k, v := range all.MTI {
+				if len(v) != 4 || !allDigits(v) {
+					return fmt.Errorf("kafka.filter.any_of[%d].all_of[%d].mti[%d] must be a 4-digit MTI, got %q", i, j, k, v)
+				}
+			}
+			for k, v := range all.DE70 {
+				if len(v) != 3 || !allDigits(v) {
+					return fmt.Errorf("kafka.filter.any_of[%d].all_of[%d].de70[%d] must be a 3-digit code, got %q", i, j, k, v)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

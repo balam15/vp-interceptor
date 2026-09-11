@@ -180,6 +180,8 @@ pub struct Kafka {
     pub queue_buffering_max_messages: u64,
     #[serde(default = "d_qbuf_kb")]
     pub queue_buffering_max_kbytes: u64,
+    #[serde(default)]
+    pub filter: KafkaFilter,
     // LEARN: BTreeMap (a TreeMap) rather than HashMap, so the escape-hatch
     //   properties are applied in a DETERMINISTIC ORDER. Rust's HashMap uses a
     //   randomly-seeded hasher, so its iteration order genuinely varies run to
@@ -187,6 +189,30 @@ pub struct Kafka {
     //   anyone depending on the order.
     #[serde(default)]
     pub properties: BTreeMap<String, String>,
+}
+
+/// Configurable Kafka frame filter.
+///
+/// `any_of` is OR across groups, `all_of` is AND within a group, and `mti` /
+/// `de70` are exact-match sets.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct KafkaFilter {
+    #[serde(default)]
+    pub any_of: Vec<KafkaFilterAnyOf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct KafkaFilterAnyOf {
+    #[serde(default)]
+    pub all_of: Vec<KafkaFilterAllOf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct KafkaFilterAllOf {
+    #[serde(default)]
+    pub mti: Vec<String>,
+    #[serde(default)]
+    pub de70: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,8 +310,37 @@ impl Config {
                 self.kafka.payload_encoding
             );
         }
+        validate_kafka_filter(&self.kafka.filter)?;
         Ok(())
     }
+}
+
+fn validate_kafka_filter(filter: &KafkaFilter) -> anyhow::Result<()> {
+    for (i, any_of) in filter.any_of.iter().enumerate() {
+        if any_of.all_of.is_empty() {
+            anyhow::bail!("kafka.filter.any_of[{i}].all_of must contain at least one rule");
+        }
+        for (j, all_of) in any_of.all_of.iter().enumerate() {
+            if all_of.mti.is_empty() && all_of.de70.is_empty() {
+                anyhow::bail!("kafka.filter.any_of[{i}].all_of[{j}] must set mti and/or de70");
+            }
+            for (k, mti) in all_of.mti.iter().enumerate() {
+                if mti.len() != 4 || !mti.chars().all(|c| c.is_ascii_digit()) {
+                    anyhow::bail!(
+                        "kafka.filter.any_of[{i}].all_of[{j}].mti[{k}] must be a 4-digit MTI, got '{mti}'"
+                    );
+                }
+            }
+            for (k, de70) in all_of.de70.iter().enumerate() {
+                if de70.len() != 3 || !de70.chars().all(|c| c.is_ascii_digit()) {
+                    anyhow::bail!(
+                        "kafka.filter.any_of[{i}].all_of[{j}].de70[{k}] must be a 3-digit code, got '{de70}'"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // LEARN: MANUAL `Default` IMPLS, not #[derive(Default)]. Why? Because derive
@@ -379,3 +434,47 @@ fn d_msg_timeout() -> u64 { 5000 }
 fn d_qbuf_msgs() -> u64 { 100_000 }
 fn d_qbuf_kb() -> u64 { 262_144 }
 fn d_admin_addr() -> String { "127.0.0.1:9101".into() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_kafka_filter() {
+        let mut cfg = Config {
+            listen: Listen { addr: "0.0.0.0:9100".into(), max_connections: d_max_conns() },
+            upstream: Upstream { addr: "127.0.0.1:8583".into(), connect_timeout_ms: d_connect_timeout() },
+            proxy: Proxy::default(),
+            tee: Tee::default(),
+            framing: Framing::default(),
+            parse: Parse::default(),
+            timing: Timing::default(),
+            kafka: Kafka {
+                enabled: true,
+                brokers: "localhost:9092".into(),
+                topic: "vp.fms.iso8583".into(),
+                value_format: d_value_format(),
+                payload_encoding: d_payload_encoding(),
+                acks: d_acks(),
+                compression: d_compression(),
+                linger_ms: d_linger(),
+                message_timeout_ms: d_msg_timeout(),
+                queue_buffering_max_messages: d_qbuf_msgs(),
+                queue_buffering_max_kbytes: d_qbuf_kb(),
+                filter: KafkaFilter {
+                    any_of: vec![KafkaFilterAnyOf {
+                        all_of: vec![KafkaFilterAllOf {
+                            mti: vec!["0800".into(), "0810".into()],
+                            de70: vec!["301".into()],
+                        }],
+                    }],
+                },
+                properties: BTreeMap::new(),
+            },
+            admin: Admin::default(),
+        };
+        assert!(cfg.validate().is_ok());
+        cfg.kafka.filter.any_of[0].all_of[0].mti = vec!["81".into()];
+        assert!(cfg.validate().is_err());
+    }
+}

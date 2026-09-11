@@ -51,6 +51,10 @@ Counters worth reading first: `tee_dropped` (Kafka is degraded — and it proves
 the hot path was not), `framer_desyncs` (wire framing does not match
 `[framing]`), and `upstream_connect_failed`.
 
+`[kafka.filter]` can drop exact-match frames from Kafka only. The current rule
+is echo traffic: MTI `0800`/`0810` with `de70 = "301"`. Frames that cannot be
+parsed for filtering are still published.
+
 ## Structure
 
 | file | role |

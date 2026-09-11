@@ -95,6 +95,13 @@ func TestValidateRejectsBadValues(t *testing.T) {
 		"kafka.value_format":      func(c *Config) { c.Kafka.ValueFormat = "protobuf" },
 		"kafka.payload_encoding":  func(c *Config) { c.Kafka.PayloadEncoding = "rot13" },
 		"timing.max_pending":      func(c *Config) { c.Timing.MaxPending = 0 },
+		"kafka.filter.mti": func(c *Config) {
+			c.Kafka.Filter = KafkaFilter{
+				AnyOf: []KafkaFilterAnyOf{{
+					AllOf: []KafkaFilterAllOf{{MTI: []string{"81"}}},
+				}},
+			}
+		},
 	}
 	for name, mutate := range cases {
 		cfg := Defaults()
@@ -102,6 +109,21 @@ func TestValidateRejectsBadValues(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("%s: expected a validation error", name)
 		}
+	}
+}
+
+func TestValidateAcceptsKafkaFilter(t *testing.T) {
+	cfg := Defaults()
+	cfg.Kafka.Filter = KafkaFilter{
+		AnyOf: []KafkaFilterAnyOf{{
+			AllOf: []KafkaFilterAllOf{{
+				MTI:  []string{"0800", "0810"},
+				DE70: []string{"301"},
+			}},
+		}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 
