@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn echo_frames_matching_filter_are_dropped() {
-        let req = b"0800822000000000000040000000000000000910075643000048301";
+        let req = b"0800822000000000000004000000000000000910075643000048301";
         let res = b"081082200000020000000400000000000000091007564300004800301";
         assert!(should_drop_frame(&filter(), req));
         assert!(should_drop_frame(&filter(), res));
