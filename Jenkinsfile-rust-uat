@@ -1,0 +1,95 @@
+pipeline {
+    agent { label 'docker-agent' }
+
+    options {
+        skipDefaultCheckout(true)
+    }
+
+    parameters {
+        string(
+            name: 'BRANCH',
+            defaultValue: 'master',
+            description: 'Git branch to checkout from Azure'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['uat', 'staging', 'prod'],
+            description: 'Target environment'
+        )
+        booleanParam(
+            name: 'SKIP_BUILD',
+            defaultValue: false,
+            description: 'Skip build stage'
+        )
+        booleanParam(
+            name: 'SKIP_PUSH',
+            defaultValue: false,
+            description: 'Skip push to registry'
+        )
+    }
+
+    environment {
+        APP_NAME = 'vp-fms-interceptor'
+        REMOTE_HOST = '10.230.83.136'
+        REGISTRY = 'repouat.maybank.co.id:8082'
+    }
+
+    stages {
+        stage('Checkout Azure') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${params.BRANCH}"]],
+                    userRemoteConfigs: [[
+                        credentialsId: '23834c4a-3c8a-47cb-bd51-c4662f9d64dd',
+                        url: 'https://maybankdigitalteam.visualstudio.com/VP%20Listener/_git/VP%20Listener'
+                    ]]
+                ])
+            }
+        }
+
+        stage('Build Image (Rust Interceptor)') {
+            when {
+                expression { return params.SKIP_BUILD != true }
+            }
+            steps {
+                script {
+                    env.SAFE_BRANCH = (env.BRANCH_NAME ?: 'detached').replaceAll('/', '-')
+                    env.GIT_SHORT_SHA = sh(script: 'git rev-parse --short=8 HEAD', returnStdout: true).trim()
+                    env.TAG = "${env.SAFE_BRANCH}-${env.BUILD_NUMBER}-${env.GIT_SHORT_SHA}"
+                    env.IMAGE = "${env.APP_NAME}:${env.TAG}"
+                }
+                sh '''
+                    set -euo pipefail
+                    podman build -f rust-interceptor/Dockerfile -t "${IMAGE}" .
+                    podman save "${IMAGE}" -o "${APP_NAME}_${TAG}.tar"
+                '''
+            }
+        }
+
+        stage('Push Image via Remote Host') {
+            when {
+                expression { return params.SKIP_PUSH != true }
+            }
+            steps {
+                sshagent(credentials: ['ssh-root']) {
+                    sh '''
+                        set -euo pipefail
+                        scp -o StrictHostKeyChecking=no "${APP_NAME}_${TAG}.tar" root@${REMOTE_HOST}:/tmp/
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "podman load -i /tmp/${APP_NAME}_${TAG}.tar"
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "podman image tag ${IMAGE} ${REGISTRY}/${APP_NAME}:${TAG}"
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "podman push ${REGISTRY}/${APP_NAME}:${TAG}"
+                        ssh -o StrictHostKeyChecking=no root@${REMOTE_HOST} "rm -f /tmp/${APP_NAME}_${TAG}.tar"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'rm -f "${APP_NAME}_${TAG}.tar" || true'
+            cleanWs()
+        }
+    }
+}

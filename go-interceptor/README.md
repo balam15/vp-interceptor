@@ -130,6 +130,11 @@ Only the security keys have kafka-go equivalents: `security.protocol`,
 message will assume it took effect, and on a payments link that assumption is
 expensive.
 
+**5. `[kafka.filter]` can drop exact-match frames from Kafka only.**
+Use `any_of` / `all_of` for OR/AND logic. The current use case is echo traffic:
+`mti = ["0800", "0810"]` and `de70 = ["301"]`. Frames that fail to parse for
+filtering are still published.
+
 ## Confinement is a design rule here, not a proof
 
 The tee worker owns two maps and mutates them on every message with no locks,

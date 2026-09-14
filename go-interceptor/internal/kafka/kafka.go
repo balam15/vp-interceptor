@@ -98,6 +98,7 @@ type Publisher struct {
 	json     bool
 	encoding string
 	parser   *parse.KvParser
+	filter   config.KafkaFilter
 	stats    *stats.Stats
 	log      *slog.Logger
 
@@ -140,6 +141,7 @@ func Build(cfg *config.Config, st *stats.Stats, log *slog.Logger) *Publisher {
 		json:           cfg.Kafka.ValueFormat == "json",
 		encoding:       cfg.Kafka.PayloadEncoding,
 		parser:         parse.New(cfg.Parse),
+		filter:         cfg.Kafka.Filter,
 		stats:          st,
 		log:            log,
 		enqueueTimeout: min(time.Duration(cfg.Kafka.MessageTimeoutMs)*time.Millisecond, enqueueTimeoutCap),
@@ -217,6 +219,10 @@ func (p *Publisher) warmUpMetadataInBackground() {
 //
 // frame must be an independent copy -- the framer guarantees that.
 func (p *Publisher) Publish(key string, meta *Meta, frame []byte) {
+	if p.shouldDrop(frame) {
+		return
+	}
+
 	value := frame
 	if p.json {
 		body, err := p.buildEnvelope(meta, frame)

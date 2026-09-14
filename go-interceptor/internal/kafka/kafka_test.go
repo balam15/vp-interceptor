@@ -10,6 +10,55 @@ import (
 	"github.com/vynamic/vp-fms-interceptor/internal/parse"
 )
 
+func TestEchoFramesMatchingFilterAreDropped(t *testing.T) {
+	filter := config.KafkaFilter{
+		AnyOf: []config.KafkaFilterAnyOf{{
+			AllOf: []config.KafkaFilterAllOf{{
+				MTI:  []string{"0800", "0810"},
+				DE70: []string{"301"},
+			}},
+		}},
+	}
+	p := &Publisher{filter: filter}
+
+	for _, payload := range []string{
+		"MDgwMDgyMjAwMDAwMDAwMDAwMDAwNDAwMDAwMDAwMDAwMDAwMDkxMDA3NDQzMTAwMDA0NDMwMQ==",
+		"MDgxMDgyMjAwMDAwMDIwMDAwMDAwNDAwMDAwMDAwMDAwMDAwMDkxMDA3NDQzMTAwMDA0NDAwMzAx",
+	} {
+		frame, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !p.shouldDrop(frame) {
+			t.Fatalf("expected %q to be filtered", payload)
+		}
+	}
+}
+
+func TestNonMatchingOrMalformedFramesAreKept(t *testing.T) {
+	filter := config.KafkaFilter{
+		AnyOf: []config.KafkaFilterAnyOf{{
+			AllOf: []config.KafkaFilterAllOf{{
+				MTI:  []string{"0800", "0810"},
+				DE70: []string{"301"},
+			}},
+		}},
+	}
+	p := &Publisher{filter: filter}
+
+	mismatch, err := base64.StdEncoding.DecodeString("MDgwMDgyMjAwMDAwMDAwMDAwMDAwNDAwMDAwMDAwMDAwMDAwMDkxMDA3NDQzMTAwMDA0NDMwMg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.shouldDrop(mismatch) {
+		t.Fatal("expected non-matching frame to be kept")
+	}
+
+	if p.shouldDrop([]byte("0810")) {
+		t.Fatal("expected malformed frame to be kept")
+	}
+}
+
 func TestHexEncodesLowercaseTwoCharsPerByte(t *testing.T) {
 	if got := EncodePayload("hex", []byte{0x00, 0x0f, 0xa5, 0xff}); got != "000fa5ff" {
 		t.Fatalf("got %q", got)

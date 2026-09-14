@@ -1,0 +1,146 @@
+pipeline {
+    agent {
+        label 'docker-agent'
+    }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+    }
+
+    parameters {
+        string(name: 'branchName', defaultValue: 'master', description: 'Input Branch Name, e.g. master')
+        string(name: 'imageTag', defaultValue: 'rust-1.0.0', description: 'Input Image Tag, e.g. rust-1.0.0')
+        choice(name: 'pushFlag', choices: ['false', 'true'], description: 'Flag for Push Image to Registry')
+    }
+
+    environment {
+        repo           = "repouat.maybank.co.id:8082"
+        serviceName    = "vp-fms-interceptor"
+
+        dockerFile     = "rust-interceptor/Dockerfile"
+        zscalerCert    = "zscaler-ca.cer"
+
+        remoteHost     = "10.230.83.136"
+        sshCredentials = "ssh-root"
+
+        proxyUrl       = "http://proxyzs.maybank.co.id:9443/"
+        noProxyList    = ".maybank.co.id,.maylab.net,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.21.0.0/24,10.230.0.0/16,localhost,127.0.0.1"
+    }
+
+    stages {
+        stage('Confirm Execution') {
+            steps {
+                script {
+                    input message: "Please confirm this execution?"
+                }
+            }
+        }
+
+        stage('Checkout Source Code') {
+            steps {
+                checkout scm
+
+                sh """
+                    echo "Current Branch:"
+                    git branch -a
+
+                    echo "Latest Commit:"
+                    git log -1 --oneline
+                """
+            }
+        }
+
+        stage('Build Container Image') {
+            steps {
+                sh """
+                    set -e
+
+                    echo "Check required files ..."
+                    test -f ${dockerFile}
+                    test -f config.toml
+                    test -f ${zscalerCert}
+                    grep "BEGIN CERTIFICATE" ${zscalerCert}
+
+                    echo "Build container image ..."
+                    podman build \\
+                      --build-arg EXTRA_CA_CERT=${zscalerCert} \\
+                      --build-arg HTTP_PROXY=${proxyUrl} \\
+                      --build-arg HTTPS_PROXY=${proxyUrl} \\
+                      --build-arg http_proxy=${proxyUrl} \\
+                      --build-arg https_proxy=${proxyUrl} \\
+                      --build-arg NO_PROXY=${noProxyList} \\
+                      --build-arg no_proxy=${noProxyList} \\
+                      -f ${dockerFile} \\
+                      -t ${serviceName}:${params.imageTag} \\
+                      .
+
+                    echo "Save image to tar ..."
+                    podman save ${serviceName}:${params.imageTag} -o ${serviceName}_${params.imageTag}.tar
+
+                    echo "Validate image tar ..."
+                    ls -lh ${serviceName}_${params.imageTag}.tar
+                """
+            }
+        }
+
+        stage('Push Image to UAT Registry') {
+            when {
+                expression { params.pushFlag == 'true' }
+            }
+
+            steps {
+                sshagent(credentials: [env.sshCredentials]) {
+                    sh """
+                        set -e
+
+                        echo "Copy image tar to remote host ..."
+                        scp -o StrictHostKeyChecking=no \\
+                          ${serviceName}_${params.imageTag}.tar \\
+                          root@${remoteHost}:/tmp/
+
+                        echo "Load, tag, and push image from remote host using Docker ..."
+                        ssh -o StrictHostKeyChecking=no root@${remoteHost} '
+                            set -e
+
+                            docker --version
+
+                            docker load -i /tmp/${serviceName}_${params.imageTag}.tar
+
+                            docker images | grep ${serviceName}
+
+                            docker tag \\
+                              localhost/${serviceName}:${params.imageTag} \\
+                              ${repo}/${serviceName}:${params.imageTag}
+
+                            docker push ${repo}/${serviceName}:${params.imageTag}
+
+                            rm -f /tmp/${serviceName}_${params.imageTag}.tar
+                        '
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh """
+                set +e
+
+                rm -f ${serviceName}_*.tar
+                podman images | grep ${serviceName} || true
+            """
+
+            cleanWs()
+        }
+
+        success {
+            echo 'Pipeline Completed'
+        }
+
+        failure {
+            echo 'Pipeline Failed'
+        }
+    }
+}

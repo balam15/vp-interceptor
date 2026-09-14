@@ -294,6 +294,12 @@ config:
     message_timeout_ms: 5000
     queue_buffering_max_messages: 100000
     queue_buffering_max_kbytes: 262144
+    # Drop exact-match echo frames from Kafka only. Forwarding still happens.
+    filter:
+      any_of:
+        - all_of:
+            - mti: ["0800", "0810"]
+              de70: ["301"]
     # Raw librdkafka properties, passed through verbatim. The only place TLS and
     # SASL can be configured. Dev is PLAINTEXT so this is empty; see
     # values-prod.yaml for the TLS form.

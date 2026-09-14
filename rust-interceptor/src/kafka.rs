@@ -27,7 +27,7 @@ use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{BaseRecord, DeliveryResult, Producer, ProducerContext, ThreadedProducer};
 use serde::Serialize;
 
-use crate::config::{Kafka as KafkaCfg, Parse as ParseCfg};
+use crate::config::{Kafka as KafkaCfg, KafkaFilter, KafkaFilterAllOf, Parse as ParseCfg};
 use crate::parse::KvParser;
 use crate::stats::Stats;
 
@@ -310,6 +310,7 @@ pub struct Publisher {
     // LEARN: Option<KvParser> stored INLINE (KvParser is 24 bytes with no heap),
     //   not behind a pointer. Java would need a reference to a heap object.
     parser: Option<KvParser>,
+    filter: KafkaFilter,
     stats: Arc<Stats>,
     enqueue_fail_log: AtomicU64,
     parse_fail_log: AtomicU64,
@@ -381,6 +382,7 @@ impl Publisher {
         };
         let payload_encoding = PayloadEncoding::parse(&cfg.payload_encoding);
         let parser = KvParser::new(parse_cfg);
+        let filter = cfg.filter.clone();
 
         let ctx = CountingContext { stats: Arc::clone(&stats), log_every: 1000 };
         // LEARN: `::<...>` IS THE "TURBOFISH". It supplies generic type arguments
@@ -413,6 +415,7 @@ impl Publisher {
                     value_format,
                     payload_encoding,
                     parser,
+                    filter,
                     stats,
                     enqueue_fail_log: AtomicU64::new(0),
                     parse_fail_log: AtomicU64::new(0),
@@ -435,6 +438,10 @@ impl Publisher {
     // LEARN: `&Meta<'_>` -- anonymous lifetime again: "a Meta borrowed from
     //   somewhere, I do not need to relate its lifetime to anything else here".
     pub fn publish(&self, key: &str, meta: &Meta<'_>, frame: &[u8]) {
+        if should_drop_frame(&self.filter, frame) {
+            return;
+        }
+
         let headers = self.headers(meta);
 
         match self.value_format {
@@ -567,9 +574,173 @@ impl Publisher {
     }
 }
 
+fn should_drop_frame(filter: &KafkaFilter, frame: &[u8]) -> bool {
+    if filter.any_of.is_empty() {
+        return false;
+    }
+    let Some((mti, de70)) = extract_mti_and_de70(frame) else {
+        return false;
+    };
+
+    filter
+        .any_of
+        .iter()
+        .any(|any_of| any_of.all_of.iter().all(|all_of| matches_rule(all_of, mti, de70)))
+}
+
+fn matches_rule(rule: &KafkaFilterAllOf, mti: &str, de70: &str) -> bool {
+    (rule.mti.is_empty() || rule.mti.iter().any(|v| v == mti))
+        && (rule.de70.is_empty() || rule.de70.iter().any(|v| v == de70))
+}
+
+fn extract_mti_and_de70(frame: &[u8]) -> Option<(&str, &str)> {
+    let (bits, mut pos) = bitmap_fields(frame)?;
+    let mti = ascii_digits(frame, 0, 4)?;
+
+    let mut de70 = None;
+    for field in 2u8..=70u8 {
+        if !bits[field as usize] {
+            continue;
+        }
+        match field {
+            70 => {
+                de70 = Some(ascii_digits(frame, pos, 3)?);
+                break;
+            }
+            _ => pos = skip_iso_field(field, frame, pos)?,
+        }
+    }
+
+    de70.map(|de70| (mti, de70))
+}
+
+fn bitmap_fields(frame: &[u8]) -> Option<([bool; 129], usize)> {
+    if frame.len() < 20 {
+        return None;
+    }
+
+    let mut bits = [false; 129];
+    let primary = parse_hex_u64(&frame[4..20])?;
+    for i in 0..64 {
+        if primary & (1u64 << (63 - i)) != 0 {
+            bits[i + 1] = true;
+        }
+    }
+
+    let mut pos = 20;
+    if bits[1] {
+        if frame.len() < 36 {
+            return None;
+        }
+        let secondary = parse_hex_u64(&frame[20..36])?;
+        for i in 0..64 {
+            if secondary & (1u64 << (63 - i)) != 0 {
+                bits[i + 65] = true;
+            }
+        }
+        pos = 36;
+    }
+
+    Some((bits, pos))
+}
+
+fn parse_hex_u64(bytes: &[u8]) -> Option<u64> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    u64::from_str_radix(s, 16).ok()
+}
+
+fn ascii_digits(frame: &[u8], pos: usize, len: usize) -> Option<&str> {
+    let end = pos.checked_add(len)?;
+    let bytes = frame.get(pos..end)?;
+    let s = std::str::from_utf8(bytes).ok()?;
+    if s.chars().all(|c| c.is_ascii_digit()) {
+        Some(s)
+    } else {
+        None
+    }
+}
+
+fn parse_len(frame: &[u8], pos: usize, digits: usize, max: usize) -> Option<(usize, usize)> {
+    let s = ascii_digits(frame, pos, digits)?;
+    let n = s.parse::<usize>().ok()?;
+    if n > max {
+        return None;
+    }
+    Some((pos + digits, n))
+}
+
+fn skip_iso_field(field: u8, frame: &[u8], pos: usize) -> Option<usize> {
+    match field {
+        2 => skip_ll_field(frame, pos, 2, 19),
+        3 => skip_fixed(frame, pos, 6),
+        4 | 6 => skip_fixed(frame, pos, 12),
+        7 => skip_fixed(frame, pos, 10),
+        11 => skip_fixed(frame, pos, 6),
+        12 => skip_fixed(frame, pos, 6),
+        13 | 15 => skip_fixed(frame, pos, 4),
+        18 => skip_fixed(frame, pos, 4),
+        22 => skip_fixed(frame, pos, 3),
+        28 => skip_fixed(frame, pos, 9),
+        32 => skip_ll_field(frame, pos, 2, 11),
+        35 => skip_ll_field(frame, pos, 2, 37),
+        37 => skip_fixed(frame, pos, 12),
+        38 => skip_fixed(frame, pos, 6),
+        39 => skip_fixed(frame, pos, 2),
+        41 => skip_fixed(frame, pos, 16),
+        42 => skip_fixed(frame, pos, 15),
+        43 => skip_fixed(frame, pos, 41),
+        48 => skip_lll_field(frame, pos, 999),
+        49 | 50 | 51 => skip_fixed(frame, pos, 3),
+        61 => skip_lll_field(frame, pos, 999),
+        63 => skip_lll_field(frame, pos, 8),
+        66 => skip_fixed(frame, pos, 3),
+        _ => None,
+    }
+}
+
+fn skip_fixed(frame: &[u8], pos: usize, len: usize) -> Option<usize> {
+    pos.checked_add(len).filter(|end| *end <= frame.len())
+}
+
+fn skip_ll_field(frame: &[u8], pos: usize, digits: usize, max: usize) -> Option<usize> {
+    let (start, len) = parse_len(frame, pos, digits, max)?;
+    start.checked_add(len).filter(|end| *end <= frame.len())
+}
+
+fn skip_lll_field(frame: &[u8], pos: usize, max: usize) -> Option<usize> {
+    skip_ll_field(frame, pos, 3, max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{KafkaFilter, KafkaFilterAllOf, KafkaFilterAnyOf};
+
+    fn filter() -> KafkaFilter {
+        KafkaFilter {
+            any_of: vec![KafkaFilterAnyOf {
+                all_of: vec![KafkaFilterAllOf {
+                    mti: vec!["0800".into(), "0810".into()],
+                    de70: vec!["301".into()],
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn echo_frames_matching_filter_are_dropped() {
+        let req = b"0800822000000000000040000000000000000910075643000048301";
+        let res = b"081082200000020000000400000000000000091007564300004800301";
+        assert!(should_drop_frame(&filter(), req));
+        assert!(should_drop_frame(&filter(), res));
+    }
+
+    #[test]
+    fn non_matching_or_malformed_frames_are_kept() {
+        let mismatch = b"0800822000000000000040000000000000000910075643000048302";
+        assert!(!should_drop_frame(&filter(), mismatch));
+        assert!(!should_drop_frame(&filter(), b"0810"));
+    }
 
     #[test]
     fn hex_encodes_lowercase_two_chars_per_byte() {
