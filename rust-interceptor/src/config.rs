@@ -42,6 +42,8 @@ pub struct Config {
     pub parse: Parse,
     #[serde(default)]
     pub timing: Timing,
+    #[serde(default)]
+    pub debug_payload: DebugPayload,
     pub kafka: Kafka,
     #[serde(default)]
     pub admin: Admin,
@@ -136,6 +138,14 @@ pub struct Timing {
     /// growth if responses stop arriving.
     #[serde(default = "d_max_pending")]
     pub max_pending: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DebugPayload {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "d_debug_payload_max_bytes")]
+    pub max_bytes: usize,
 }
 
 /// Optional field extraction for the Kafka envelope. Never affects forwarding.
@@ -295,6 +305,11 @@ impl Config {
         if self.parse.max_fields == 0 {
             anyhow::bail!("parse.max_fields must be >= 1");
         }
+        if self.debug_payload.enabled && self.debug_payload.max_bytes == 0 {
+            anyhow::bail!(
+                "debug_payload.max_bytes must be >= 1 when debug_payload.enabled is true"
+            );
+        }
         if !matches!(self.kafka.value_format.as_str(), "json" | "raw") {
             anyhow::bail!(
                 "kafka.value_format must be 'json' or 'raw', got '{}'",
@@ -351,7 +366,11 @@ fn validate_kafka_filter(filter: &KafkaFilter) -> anyhow::Result<()> {
 //   default value a trait impl you can see, test, and reason about.
 impl Default for Proxy {
     fn default() -> Self {
-        Self { read_buffer_bytes: d_read_buf(), nodelay: true, idle_timeout_ms: 0 }
+        Self {
+            read_buffer_bytes: d_read_buf(),
+            nodelay: true,
+            idle_timeout_ms: 0,
+        }
     }
 }
 
@@ -379,7 +398,20 @@ impl Default for Framing {
 
 impl Default for Timing {
     fn default() -> Self {
-        Self { enabled: true, pair_request_response: true, max_pending: d_max_pending() }
+        Self {
+            enabled: true,
+            pair_request_response: true,
+            max_pending: d_max_pending(),
+        }
+    }
+}
+
+impl Default for DebugPayload {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_bytes: d_debug_payload_max_bytes(),
+        }
     }
 }
 
@@ -397,7 +429,9 @@ impl Default for Parse {
 
 impl Default for Admin {
     fn default() -> Self {
-        Self { addr: d_admin_addr() }
+        Self {
+            addr: d_admin_addr(),
+        }
     }
 }
 
@@ -410,30 +444,81 @@ impl Default for Admin {
 //   100_000.
 // LEARN: `"both".into()` converts &'static str -> String, an allocation, but
 //   only ever at config-load time.
-fn d_true() -> bool { true }
-fn d_max_conns() -> usize { 4096 }
-fn d_connect_timeout() -> u64 { 3000 }
-fn d_read_buf() -> usize { 16384 }
-fn d_shards() -> usize { 4 }
-fn d_queue_cap() -> usize { 8192 }
-fn d_directions() -> String { "both".into() }
-fn d_framing_mode() -> String { "length_prefix".into() }
-fn d_prefix_bytes() -> usize { 2 }
-fn d_max_frame() -> usize { 65536 }
-fn d_max_pending() -> usize { 256 }
-fn d_parse_mode() -> String { "key_value".into() }
-fn d_pair_delim() -> String { ",".into() }
-fn d_kv_delim() -> String { "=".into() }
-fn d_max_fields() -> usize { 64 }
-fn d_value_format() -> String { "json".into() }
-fn d_payload_encoding() -> String { "base64".into() }
-fn d_acks() -> String { "1".into() }
-fn d_compression() -> String { "lz4".into() }
-fn d_linger() -> u64 { 5 }
-fn d_msg_timeout() -> u64 { 5000 }
-fn d_qbuf_msgs() -> u64 { 100_000 }
-fn d_qbuf_kb() -> u64 { 262_144 }
-fn d_admin_addr() -> String { "127.0.0.1:9101".into() }
+fn d_true() -> bool {
+    true
+}
+fn d_max_conns() -> usize {
+    4096
+}
+fn d_connect_timeout() -> u64 {
+    3000
+}
+fn d_read_buf() -> usize {
+    16384
+}
+fn d_shards() -> usize {
+    4
+}
+fn d_queue_cap() -> usize {
+    8192
+}
+fn d_directions() -> String {
+    "both".into()
+}
+fn d_framing_mode() -> String {
+    "length_prefix".into()
+}
+fn d_prefix_bytes() -> usize {
+    2
+}
+fn d_max_frame() -> usize {
+    65536
+}
+fn d_max_pending() -> usize {
+    256
+}
+fn d_debug_payload_max_bytes() -> usize {
+    4096
+}
+fn d_parse_mode() -> String {
+    "key_value".into()
+}
+fn d_pair_delim() -> String {
+    ",".into()
+}
+fn d_kv_delim() -> String {
+    "=".into()
+}
+fn d_max_fields() -> usize {
+    64
+}
+fn d_value_format() -> String {
+    "json".into()
+}
+fn d_payload_encoding() -> String {
+    "base64".into()
+}
+fn d_acks() -> String {
+    "1".into()
+}
+fn d_compression() -> String {
+    "lz4".into()
+}
+fn d_linger() -> u64 {
+    5
+}
+fn d_msg_timeout() -> u64 {
+    5000
+}
+fn d_qbuf_msgs() -> u64 {
+    100_000
+}
+fn d_qbuf_kb() -> u64 {
+    262_144
+}
+fn d_admin_addr() -> String {
+    "127.0.0.1:9101".into()
+}
 
 #[cfg(test)]
 mod tests {
@@ -442,13 +527,20 @@ mod tests {
     #[test]
     fn accepts_kafka_filter() {
         let mut cfg = Config {
-            listen: Listen { addr: "0.0.0.0:9100".into(), max_connections: d_max_conns() },
-            upstream: Upstream { addr: "127.0.0.1:8583".into(), connect_timeout_ms: d_connect_timeout() },
+            listen: Listen {
+                addr: "0.0.0.0:9100".into(),
+                max_connections: d_max_conns(),
+            },
+            upstream: Upstream {
+                addr: "127.0.0.1:8583".into(),
+                connect_timeout_ms: d_connect_timeout(),
+            },
             proxy: Proxy::default(),
             tee: Tee::default(),
             framing: Framing::default(),
             parse: Parse::default(),
             timing: Timing::default(),
+            debug_payload: DebugPayload::default(),
             kafka: Kafka {
                 enabled: true,
                 brokers: "localhost:9092".into(),

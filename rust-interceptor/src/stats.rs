@@ -183,7 +183,10 @@ impl Stats {
             ("conns_accepted", Self::get(&self.conns_accepted)),
             ("conns_active", Self::get(&self.conns_active)),
             ("conns_rejected", Self::get(&self.conns_rejected)),
-            ("upstream_connect_failed", Self::get(&self.upstream_connect_failed)),
+            (
+                "upstream_connect_failed",
+                Self::get(&self.upstream_connect_failed),
+            ),
             ("bytes_vp_to_fms", Self::get(&self.bytes_vp_to_fms)),
             ("bytes_fms_to_vp", Self::get(&self.bytes_fms_to_vp)),
             ("tee_accepted", Self::get(&self.tee_accepted)),
@@ -191,17 +194,28 @@ impl Stats {
             ("frames_emitted", Self::get(&self.frames_emitted)),
             ("framer_desyncs", Self::get(&self.framer_desyncs)),
             ("kafka_enqueued", Self::get(&self.kafka_enqueued)),
-            ("kafka_enqueue_failed", Self::get(&self.kafka_enqueue_failed)),
+            (
+                "kafka_enqueue_failed",
+                Self::get(&self.kafka_enqueue_failed),
+            ),
             ("kafka_delivered", Self::get(&self.kafka_delivered)),
-            ("kafka_delivery_failed", Self::get(&self.kafka_delivery_failed)),
+            (
+                "kafka_delivery_failed",
+                Self::get(&self.kafka_delivery_failed),
+            ),
             ("rtt_count", Self::get(&self.rtt_count)),
             ("rtt_sum_us", Self::get(&self.rtt_sum_us)),
             ("rtt_max_us", Self::get(&self.rtt_max_us)),
             ("rtt_unmatched", Self::get(&self.rtt_unmatched)),
             ("conn_duration_count", Self::get(&self.conn_duration_count)),
-            ("conn_duration_sum_ms", Self::get(&self.conn_duration_sum_ms)),
-            ("conn_duration_max_ms", Self::get(&self.conn_duration_max_ms)),
+            (
+                "conn_duration_sum_ms",
+                Self::get(&self.conn_duration_sum_ms),
+            ),
+            (
+                "conn_duration_max_ms",
+                Self::get(&self.conn_duration_max_ms),
+            ),
         ]
     }
-
 }

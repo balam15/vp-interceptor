@@ -46,6 +46,7 @@ use tokio::time::timeout;
 const SMALL_READ_RATIO: usize = 4;
 
 use crate::config::Config;
+use crate::payload_log;
 use crate::stats::Stats;
 use crate::tee::{Direction, Tee};
 
@@ -82,14 +83,16 @@ pub async fn handle(
     )
     .await
     {
-        Ok(Ok(s)) => s,       // connected
-        Ok(Err(e)) => {       // connect refused / failed
+        Ok(Ok(s)) => s, // connected
+        Ok(Err(e)) => {
+            // connect refused / failed
             Stats::inc(&stats.upstream_connect_failed);
             tracing::warn!(conn_id, %peer, upstream = %cfg.upstream.addr, error = %e, "upstream connect failed");
             // LEARN: bare `return` in a function returning `()`.
             return;
         }
-        Err(_) => {           // timed out
+        Err(_) => {
+            // timed out
             Stats::inc(&stats.upstream_connect_failed);
             tracing::warn!(conn_id, %peer, upstream = %cfg.upstream.addr, "upstream connect timed out");
             return;
@@ -280,9 +283,22 @@ async fn pump(
             //   finish -- if VP half-closes after sending a request, FMS's
             //   response still gets delivered. Correct TCP proxy behaviour, and
             //   frequently got wrong.
+            tracing::info!(
+                "peer closed stream conn_id={} direction=\"{}\"",
+                conn_id,
+                dir.as_str()
+            );
             let _ = wr.shutdown().await;
             return Ok(());
         }
+
+        payload_log::log_bytes(
+            &cfg.debug_payload,
+            conn_id,
+            dir.as_str(),
+            "socket_received",
+            &buf[..n],
+        );
 
         // LEARN: THIS IS THE LINE THE WHOLE PROGRAM EXISTS TO PROTECT. Bytes go
         //   to the far socket FIRST, before any tee work happens.
@@ -300,6 +316,13 @@ async fn pump(
         //   OutputStream.write already guarantees this for blocking streams, but
         //   NIO channels do NOT, and forgetting the loop is a classic NIO bug.
         wr.write_all(&buf[..n]).await?;
+        payload_log::log_bytes(
+            &cfg.debug_payload,
+            conn_id,
+            dir.as_str(),
+            "socket_forwarded",
+            &buf[..n],
+        );
         // LEARN: `n as u64` -- usize to u64. Explicit, always.
         Stats::add(byte_counter, n as u64);
 
@@ -350,10 +373,10 @@ async fn pump(
                 //   of a network hop.
                 let exact = Bytes::copy_from_slice(&buf[..n]);
                 buf.clear(); // keeps the allocation for the next read
-                // LEARN: clear() sets the length to 0 but KEEPS THE CAPACITY, so
-                //   the next reserve(cap) is a no-op and THE SAME 16 KiB
-                //   ALLOCATION SERVES THIS CONNECTION FOR ITS ENTIRE LIFETIME.
-                // JAVA: ByteBuffer.clear() does exactly this too.
+                             // LEARN: clear() sets the length to 0 but KEEPS THE CAPACITY, so
+                             //   the next reserve(cap) is a no-op and THE SAME 16 KiB
+                             //   ALLOCATION SERVES THIS CONNECTION FOR ITS ENTIRE LIFETIME.
+                             // JAVA: ByteBuffer.clear() does exactly this too.
                 exact
             } else {
                 // LEARN: a genuinely large read that filled most of the buffer --

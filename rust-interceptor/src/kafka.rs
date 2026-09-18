@@ -27,8 +27,11 @@ use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{BaseRecord, DeliveryResult, Producer, ProducerContext, ThreadedProducer};
 use serde::Serialize;
 
-use crate::config::{Kafka as KafkaCfg, KafkaFilter, KafkaFilterAllOf, Parse as ParseCfg};
+use crate::config::{
+    DebugPayload, Kafka as KafkaCfg, KafkaFilter, KafkaFilterAllOf, Parse as ParseCfg,
+};
 use crate::parse::KvParser;
+use crate::payload_log;
 use crate::stats::Stats;
 
 /// Delivery reports arrive on librdkafka's own background thread. We only count
@@ -100,7 +103,11 @@ impl ProducerContext for CountingContext {
                 // LEARN: fetch_add returns the value BEFORE the addition, hence
                 //   the `+ 1`.
                 // JAVA: getAndIncrement().
-                let n = self.stats.kafka_delivery_failed.fetch_add(1, Ordering::Relaxed) + 1;
+                let n = self
+                    .stats
+                    .kafka_delivery_failed
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
                 // Rate-limit: a broker outage would otherwise produce one log line
                 // per transaction, and log I/O is the one thing that could still
                 // starve the runtime.
@@ -311,6 +318,7 @@ pub struct Publisher {
     //   not behind a pointer. Java would need a reference to a heap object.
     parser: Option<KvParser>,
     filter: KafkaFilter,
+    debug_payload: DebugPayload,
     stats: Arc<Stats>,
     enqueue_fail_log: AtomicU64,
     parse_fail_log: AtomicU64,
@@ -332,6 +340,7 @@ impl Publisher {
     pub fn build(
         cfg: &KafkaCfg,
         parse_cfg: &ParseCfg,
+        debug_payload: &DebugPayload,
         stats: Arc<Stats>,
     ) -> Option<Arc<Publisher>> {
         if !cfg.enabled {
@@ -361,8 +370,14 @@ impl Publisher {
             .set("compression.type", cfg.compression.as_str())
             .set("linger.ms", cfg.linger_ms.to_string())
             .set("message.timeout.ms", cfg.message_timeout_ms.to_string())
-            .set("queue.buffering.max.messages", cfg.queue_buffering_max_messages.to_string())
-            .set("queue.buffering.max.kbytes", cfg.queue_buffering_max_kbytes.to_string())
+            .set(
+                "queue.buffering.max.messages",
+                cfg.queue_buffering_max_messages.to_string(),
+            )
+            .set(
+                "queue.buffering.max.kbytes",
+                cfg.queue_buffering_max_kbytes.to_string(),
+            )
             // Never let a full internal queue block the caller. Combined with our
             // own bounded tee queue this makes the whole publish path total.
             .set("queue.buffering.max.ms", cfg.linger_ms.to_string())
@@ -384,7 +399,10 @@ impl Publisher {
         let parser = KvParser::new(parse_cfg);
         let filter = cfg.filter.clone();
 
-        let ctx = CountingContext { stats: Arc::clone(&stats), log_every: 1000 };
+        let ctx = CountingContext {
+            stats: Arc::clone(&stats),
+            log_every: 1000,
+        };
         // LEARN: `::<...>` IS THE "TURBOFISH". It supplies generic type arguments
         //   explicitly when inference cannot determine them.
         // JAVA: writes `Foo.<String>bar()`. Rust needs the extra `::` because
@@ -416,6 +434,7 @@ impl Publisher {
                     payload_encoding,
                     parser,
                     filter,
+                    debug_payload: debug_payload.clone(),
                     stats,
                     enqueue_fail_log: AtomicU64::new(0),
                     parse_fail_log: AtomicU64::new(0),
@@ -517,6 +536,14 @@ impl Publisher {
     }
 
     fn send(&self, key: &str, value: &[u8], headers: OwnedHeaders) {
+        payload_log::log_bytes(
+            &self.debug_payload,
+            key.parse().unwrap_or(0),
+            "kafka",
+            "kafka_send_value",
+            value,
+        );
+
         // LEARN: FOUR GENERIC PARAMETERS -- a lifetime, the key type, the payload
         //   type, and the delivery-opaque type.
         // LEARN: note `str` and `[u8]` are UNSIZED TYPES used DIRECTLY as type
@@ -557,11 +584,26 @@ impl Publisher {
             // LEARN: this does allocate three Strings per message (conn_id, seq,
             //   ts_ms), a minor cost the design accepts. It runs on the tee
             //   worker, never on the forwarding path.
-            .insert(Header { key: "conn_id", value: Some(&meta.conn_id.to_string()) })
-            .insert(Header { key: "direction", value: Some(meta.direction) })
-            .insert(Header { key: "seq", value: Some(&meta.seq.to_string()) })
-            .insert(Header { key: "peer", value: Some(meta.peer) })
-            .insert(Header { key: "ts_ms", value: Some(&meta.ts_ms.to_string()) })
+            .insert(Header {
+                key: "conn_id",
+                value: Some(&meta.conn_id.to_string()),
+            })
+            .insert(Header {
+                key: "direction",
+                value: Some(meta.direction),
+            })
+            .insert(Header {
+                key: "seq",
+                value: Some(&meta.seq.to_string()),
+            })
+            .insert(Header {
+                key: "peer",
+                value: Some(meta.peer),
+            })
+            .insert(Header {
+                key: "ts_ms",
+                value: Some(&meta.ts_ms.to_string()),
+            })
     }
 
     // LEARN: `if let Err(e) = ...` is the Err-side counterpart to
@@ -582,10 +624,12 @@ fn should_drop_frame(filter: &KafkaFilter, frame: &[u8]) -> bool {
         return false;
     };
 
-    filter
-        .any_of
-        .iter()
-        .any(|any_of| any_of.all_of.iter().all(|all_of| matches_rule(all_of, mti, de70)))
+    filter.any_of.iter().any(|any_of| {
+        any_of
+            .all_of
+            .iter()
+            .all(|all_of| matches_rule(all_of, mti, de70))
+    })
 }
 
 fn matches_rule(rule: &KafkaFilterAllOf, mti: &str, de70: &str) -> bool {
@@ -744,14 +788,19 @@ mod tests {
 
     #[test]
     fn hex_encodes_lowercase_two_chars_per_byte() {
-        assert_eq!(PayloadEncoding::Hex.encode(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+        assert_eq!(
+            PayloadEncoding::Hex.encode(&[0x00, 0x0f, 0xa5, 0xff]),
+            "000fa5ff"
+        );
     }
 
     #[test]
     fn base64_roundtrips() {
         let raw = b"0200|STAN=00000001";
         let enc = PayloadEncoding::Base64.encode(raw);
-        let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
+        let dec = base64::engine::general_purpose::STANDARD
+            .decode(&enc)
+            .unwrap();
         assert_eq!(dec, raw);
     }
 
@@ -761,7 +810,9 @@ mod tests {
         // bytes the way the utf8 encoding would.
         let raw = &[0xff, 0xfe, 0x00, 0x80, 0x7f];
         let enc = PayloadEncoding::Base64.encode(raw);
-        let dec = base64::engine::general_purpose::STANDARD.decode(&enc).unwrap();
+        let dec = base64::engine::general_purpose::STANDARD
+            .decode(&enc)
+            .unwrap();
         assert_eq!(dec, raw);
     }
 
@@ -822,11 +873,15 @@ mod tests {
         // LEARN: serde_json::Value is an untyped JSON tree, for when you want to
         //   poke at fields dynamically.
         // JAVA: Jackson's JsonNode.
-        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
         assert_eq!(v["fields"]["accountName"], "Zacky");
         assert_eq!(v["fields"]["accountNumber"], "11020134353");
         assert_eq!(v["fields"]["bankCode"], "1234");
-        assert!(v.get("parse_error").is_none(), "parse_error must be omitted on success");
+        assert!(
+            v.get("parse_error").is_none(),
+            "parse_error must be omitted on success"
+        );
     }
 
     #[test]
@@ -848,7 +903,8 @@ mod tests {
             encoding: "base64",
             payload: &payload,
         };
-        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
         assert!(v.get("fields").is_none());
         assert_eq!(v["parse_error"], "not valid utf-8");
         // The point: the bytes survive even when parsing does not.

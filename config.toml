@@ -63,6 +63,12 @@ pair_request_response = true
 # growth when responses stop arriving; overflow increments rtt_unmatched.
 max_pending = 256
 
+[debug_payload]
+# Logs full payload bytes in docker logs for troubleshooting. This can include
+# PAN/track2 data, so disable after debugging in shared or retained logs.
+enabled = true
+max_bytes = 65536
+
 # Optional field extraction for the Kafka envelope. Runs on the tee workers, so
 # it cannot affect VP<->FMS latency, and a parse failure never suppresses the
 # publish -- the frame goes out with a `parse_error` field instead.

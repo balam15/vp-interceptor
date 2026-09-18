@@ -82,7 +82,11 @@ impl Framer {
         //   config rather than borrowing it. That means no lifetime parameter to
         //   thread through the type -- which is why tee.rs calls
         //   `self.framing.clone()` before building one.
-        Self { cfg, buf: BytesMut::new(), desynced: false }
+        Self {
+            cfg,
+            buf: BytesMut::new(),
+            desynced: false,
+        }
     }
 
     // LEARN: THE SIGNATURE CARRIES THE WHOLE CONTRACT. Read it carefully:
@@ -209,8 +213,8 @@ impl Framer {
             }
             if self.buf.len() < n + body_len {
                 break; // partial frame, wait for more bytes
-                // LEARN: note the already-completed frames in `out` are still
-                //   returned below. Correct incremental parsing.
+                       // LEARN: note the already-completed frames in `out` are still
+                       //   returned below. Correct incremental parsing.
             }
 
             // LEARN: `advance(n)` skips the prefix by moving the buffer's START
@@ -296,14 +300,20 @@ mod tests {
         // LEARN: `assert_eq!` prints BOTH values on failure. The macro captures
         //   the source expressions, so the failure output shows what was compared
         //   without you writing a message.
-        assert_eq!(got, vec![Bytes::from_static(b"abc"), Bytes::from_static(b"xyz")]);
+        assert_eq!(
+            got,
+            vec![Bytes::from_static(b"abc"), Bytes::from_static(b"xyz")]
+        );
     }
 
     #[test]
     fn splits_multiple_frames_in_one_read() {
         let mut f = Framer::new(cfg(false));
         let got = frames(f.push(&[0x00, 0x01, b'a', 0x00, 0x02, b'b', b'c']));
-        assert_eq!(got, vec![Bytes::from_static(b"a"), Bytes::from_static(b"bc")]);
+        assert_eq!(
+            got,
+            vec![Bytes::from_static(b"a"), Bytes::from_static(b"bc")]
+        );
     }
 
     #[test]
@@ -334,6 +344,9 @@ mod tests {
         let mut c = cfg(false);
         c.mode = "raw".into();
         let mut f = Framer::new(c);
-        assert_eq!(frames(f.push(b"anything")), vec![Bytes::from_static(b"anything")]);
+        assert_eq!(
+            frames(f.push(b"anything")),
+            vec![Bytes::from_static(b"anything")]
+        );
     }
 }

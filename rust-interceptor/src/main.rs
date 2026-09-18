@@ -24,6 +24,7 @@ mod config;
 mod framing;
 mod kafka;
 mod parse;
+mod payload_log;
 mod proxy;
 mod stats;
 mod tee;
@@ -129,7 +130,9 @@ async fn main() -> anyhow::Result<()> {
     //   and returns Option<String> because there might not be one --
     //   `args[1]` in Java would throw ArrayIndexOutOfBoundsException. Rust turns
     //   absence into a value you must handle.
-    let path = std::env::args().nth(1).unwrap_or_else(|| "config.toml".into());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config.toml".into());
 
     // LEARN: `::` is the path separator for associated functions and types;
     //   `.` is for methods on a value. So `Config::load` is a "static method".
@@ -169,7 +172,12 @@ async fn main() -> anyhow::Result<()> {
     // JAVA: Optional<T> is a whole extra heap object wrapping a reference.
     // LEARN: The Option here ENCODES THE ARCHITECTURAL RULE in the type system:
     //   downstream code is FORCED BY THE COMPILER to handle the no-Kafka case.
-    let publisher = kafka::Publisher::build(&cfg.kafka, &cfg.parse, Arc::clone(&stats));
+    let publisher = kafka::Publisher::build(
+        &cfg.kafka,
+        &cfg.parse,
+        &cfg.debug_payload,
+        Arc::clone(&stats),
+    );
     // LEARN: `.clone()` on Option<Arc<_>> clones the Option, which clones the
     //   inner Arc if present -- one refcount bump, or nothing at all. We clone
     //   rather than move because `publisher` is needed again at shutdown below.
@@ -207,9 +215,9 @@ async fn main() -> anyhow::Result<()> {
     //   CAPTURE of the variable named e. They are CHECKED AT COMPILE TIME, so a
     //   mismatched placeholder is a compile error -- unlike String.format,
     //   which blows up at runtime.
-    let listener = TcpListener::bind(&cfg.listen.addr).await.map_err(|e| {
-        anyhow::anyhow!("binding listen address {}: {e}", cfg.listen.addr)
-    })?;
+    let listener = TcpListener::bind(&cfg.listen.addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("binding listen address {}: {e}", cfg.listen.addr))?;
     // LEARN: STRUCTURED LOGGING -- these are key/value fields, not string
     //   concatenation. The `%` sigil means "record this using its Display impl"
     //   (i.e. toString()). There is also `?` for Debug formatting (see kafka.rs).

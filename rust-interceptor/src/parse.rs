@@ -108,7 +108,11 @@ impl KvParser {
             //   the pattern itself.
             match pair.split_once(self.kv_delim as char) {
                 Some((k, v)) => {
-                    let (k, v) = if self.trim { (k.trim(), v.trim()) } else { (k, v) };
+                    let (k, v) = if self.trim {
+                        (k.trim(), v.trim())
+                    } else {
+                        (k, v)
+                    };
                     if k.is_empty() {
                         return Err(format!("empty key in segment {i}"));
                     }

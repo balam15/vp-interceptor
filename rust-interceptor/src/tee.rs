@@ -15,13 +15,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::framing::{Framer, Step};
 use crate::kafka::{self, Publisher};
+use crate::payload_log;
 use crate::stats::Stats;
 
 // LEARN: six traits derived in one line. What each buys you:
@@ -83,9 +83,20 @@ impl Direction {
 enum Event {
     /// Sent when the connection is accepted, so `conn_age_ms` is measured from
     /// the real accept time rather than from the first frame.
-    Open { conn_id: u64, at: Instant },
-    Data { conn_id: u64, dir: Direction, peer: Arc<str>, chunk: Bytes },
-    Close { conn_id: u64, at: Instant },
+    Open {
+        conn_id: u64,
+        at: Instant,
+    },
+    Data {
+        conn_id: u64,
+        dir: Direction,
+        peer: Arc<str>,
+        chunk: Bytes,
+    },
+    Close {
+        conn_id: u64,
+        at: Instant,
+    },
 }
 
 /// Cloneable handle held by every connection pump.
@@ -137,7 +148,7 @@ impl Tee {
                     publish_vp_to_fms: false,
                     publish_fms_to_vp: false,
                     active: false,
-                }
+                };
             }
         };
 
@@ -166,6 +177,7 @@ impl Tee {
                 //   with a trivial one-time cost is very idiomatic Rust.
                 framing: cfg.framing.clone(),
                 timing_cfg: cfg.timing.clone(),
+                debug_payload: cfg.debug_payload.clone(),
                 stats: Arc::clone(&stats),
                 state: HashMap::new(),
                 timing: HashMap::new(),
@@ -189,7 +201,11 @@ impl Tee {
             tokio::spawn(worker.run());
         }
 
-        tracing::info!(shards = cfg.tee.shards, queue_capacity = cfg.tee.queue_capacity, "tee workers started");
+        tracing::info!(
+            shards = cfg.tee.shards,
+            queue_capacity = cfg.tee.queue_capacity,
+            "tee workers started"
+        );
 
         Tee {
             shards: Arc::new(senders),
@@ -254,7 +270,12 @@ impl Tee {
         // LEARN: field init shorthand for three of the four fields.
         //   Arc::clone(peer) is one atomic increment. The whole event is built on
         //   the stack and MOVED into the queue slot. ZERO ALLOCATIONS.
-        let ev = Event::Data { conn_id, dir, peer: Arc::clone(peer), chunk };
+        let ev = Event::Data {
+            conn_id,
+            dir,
+            peer: Arc::clone(peer),
+            chunk,
+        };
         // LEARN: `try_send` is non-blocking -- returns Err immediately if full.
         // JAVA: BlockingQueue.offer() (as opposed to put()).
         match shard.try_send(ev) {
@@ -283,7 +304,10 @@ impl Tee {
         //   so YOU CANNOT ACCIDENTALLY SUBTRACT A WALL-CLOCK TIME FROM A
         //   MONOTONIC ONE -- that is a type error, not a production incident.
         // JAVA: gives you two longs and hopes.
-        let _ = shard.try_send(Event::Open { conn_id, at: Instant::now() });
+        let _ = shard.try_send(Event::Open {
+            conn_id,
+            at: Instant::now(),
+        });
     }
 
     #[inline]
@@ -294,7 +318,10 @@ impl Tee {
         let shard = &self.shards[(conn_id as usize) % self.shards.len()];
         // Best-effort. A dropped Close only means the framer state lives until
         // the worker's idle sweep reclaims it.
-        let _ = shard.try_send(Event::Close { conn_id, at: Instant::now() });
+        let _ = shard.try_send(Event::Close {
+            conn_id,
+            at: Instant::now(),
+        });
     }
 }
 
@@ -319,7 +346,12 @@ struct ConnTiming {
 
 impl ConnTiming {
     fn new(now: Instant) -> Self {
-        Self { opened: now, last_frame: None, pending: VecDeque::new(), last_touched: now }
+        Self {
+            opened: now,
+            last_frame: None,
+            pending: VecDeque::new(),
+            last_touched: now,
+        }
     }
 }
 
@@ -329,6 +361,7 @@ struct Worker {
     publisher: Arc<Publisher>,
     framing: crate::config::Framing,
     timing_cfg: crate::config::Timing,
+    debug_payload: crate::config::DebugPayload,
     stats: Arc<Stats>,
     // LEARN: A TUPLE AS A COMPOSITE KEY. This works because (u64, Direction)
     //   gets Hash and Eq automatically from its components (both derived them).
@@ -439,7 +472,12 @@ impl Worker {
                     );
                 }
             }
-            Event::Data { conn_id, dir, peer, chunk } => {
+            Event::Data {
+                conn_id,
+                dir,
+                peer,
+                chunk,
+            } => {
                 // LEARN: THIS CLONE EXISTS FOR A BORROW-CHECKER REASON, and it is
                 //   the most common friction a Java developer hits in Rust:
                 //     - self.state.entry(...) takes &mut self.state.
@@ -459,11 +497,14 @@ impl Worker {
                 // LEARN: `entry(key).or_insert_with(closure)` returns
                 //   &mut StreamState -- a mutable reference INTO the map.
                 // JAVA: map.computeIfAbsent(k, f)
-                let entry = self.state.entry((conn_id, dir)).or_insert_with(|| StreamState {
-                    framer: Framer::new(framing),
-                    seq: 0,
-                    last_touched: Instant::now(),
-                });
+                let entry = self
+                    .state
+                    .entry((conn_id, dir))
+                    .or_insert_with(|| StreamState {
+                        framer: Framer::new(framing),
+                        seq: 0,
+                        last_touched: Instant::now(),
+                    });
                 entry.last_touched = Instant::now();
 
                 // LEARN: `push(&chunk)` passes a SHARED BORROW -- Bytes derefs to
@@ -539,6 +580,13 @@ impl Worker {
                                 gap_ms,
                                 rtt_ms,
                             };
+                            payload_log::log_bytes(
+                                &self.debug_payload,
+                                conn_id,
+                                dir.as_str(),
+                                "kafka_frame_ready",
+                                &frame,
+                            );
                             self.publisher.publish(&key, &meta, &frame);
                         }
                     }
@@ -576,14 +624,18 @@ impl Worker {
         now: Instant,
     ) -> (Option<f64>, Option<f64>, Option<f64>) {
         // Falls back to first-frame time if the Open event was dropped.
-        let t = timing.entry(conn_id).or_insert_with(|| ConnTiming::new(now));
+        let t = timing
+            .entry(conn_id)
+            .or_insert_with(|| ConnTiming::new(now));
         t.last_touched = now;
 
         let conn_age_ms = ms(now.saturating_duration_since(t.opened));
         // LEARN: `Option::map` -- if Some, apply the closure; if None, stay None.
         // JAVA: Optional.map. Produces Option<f64> in one expression, with no
         //   hand-written branch and no allocation.
-        let gap_ms = t.last_frame.map(|prev| ms(now.saturating_duration_since(prev)));
+        let gap_ms = t
+            .last_frame
+            .map(|prev| ms(now.saturating_duration_since(prev)));
         t.last_frame = Some(now);
 
         let mut rtt_ms = None;
@@ -645,5 +697,8 @@ fn ms(d: Duration) -> f64 {
 //   durations, SystemTime (wall) for timestamps published to Kafka. The right
 //   tool for each, and the type system will not let you mix them up.
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

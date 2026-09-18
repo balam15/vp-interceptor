@@ -52,15 +52,15 @@ pub async fn serve(addr: String, stats: Arc<Stats>) {
         let stats = Arc::clone(&stats);
         tokio::spawn(async move {
             // LEARN: `[0u8; 1024]` is a FIXED-SIZE ARRAY of type [u8; 1024],
-             
+
             // Helm cart for rust
-            // service.yaml 
+            // service.yaml
             // deployment.yaml
             // alphine -> os
             // Logging -> mouting, volume existing
             // 512 MB
             // 0.5 core
-            // 
+            //
             //   allocated ON THE STACK (strictly: inside the task's state-machine
             //   struct). THE SIZE IS PART OF THE TYPE.
             // JAVA: `new byte[1024]` is ALWAYS a heap allocation with a header
