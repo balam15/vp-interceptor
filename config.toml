@@ -119,12 +119,12 @@ linger_ms = 5
 message_timeout_ms = 5000
 queue_buffering_max_messages = 100000
 queue_buffering_max_kbytes = 262144
-# Drop exact-match echo frames from Kafka only. Forwarding still happens.
+# Drop exact-match echo/sign-on frames from Kafka only. Forwarding still happens.
 [kafka.filter]
 any_of = [
   { all_of = [
       { mti = ["0800", "0810"] },
-      { de70 = ["301"] }
+      { de70 = ["301", "001"] }
     ] }
 ]
 # Extra librdkafka properties passed through verbatim (SASL/TLS, etc).
