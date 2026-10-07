@@ -98,7 +98,7 @@ its knobs are `globalImageTag` and `replicaCount`.
 
 | key | default | notes |
 | --- | --- | --- |
-| `image.repository` / `image.tag` | `vp-fms-interceptor` / `""` (= appVersion) | pin a digest in prod |
+| `image.repository` / `image.tag` | `repouat.maybank.co.id:8082/vp-fms-interceptor` / `rust-1.0.0` | the image Jenkins builds; pin a digest in prod |
 | `replicaCount` | `1` | single replica by design; connections never rebalance |
 | `config.upstream.addr` | `192.168.249.150:11682` | FMS endpoint (from running config.toml); not loopback |
 | `config.kafka.enabled` / `config.kafka.brokers` | `true` / `10.235.83.34:9092` | from running config.toml |

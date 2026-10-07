@@ -19,12 +19,12 @@
 globalImageTag: ""
 
 image:
-  # Full registry path, e.g.
-  #   image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
-  repository: vp-fms-interceptor
-  # Empty defers to globalImageTag, then .Chart.AppVersion. Set this to pin an
-  # immutable tag or digest for one release regardless of globalImageTag.
-  tag: ""
+  # The image the Listener_VP Jenkins job builds and pushes to the Nexus
+  # registry. Override per registry/environment.
+  repository: repouat.maybank.co.id:8082/vp-fms-interceptor
+  # The tag Jenkins pushed (build #23). Empty would defer to globalImageTag,
+  # then .Chart.AppVersion; pinned here so a plain install pulls a real image.
+  tag: "rust-1.0.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
