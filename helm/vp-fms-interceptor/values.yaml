@@ -160,10 +160,10 @@ config:
     max_connections: 4096
 
   upstream:
-    # REQUIRED. The real FMS endpoint -- an in-cluster Service DNS name such as
-    # fms.vp-listener.svc.cluster.local:8583, or an external host:port. A 127.x
-    # address here means THIS POD; the chart refuses to render it.
-    addr: ""
+    # The real FMS endpoint -- the value from the running config.toml. Override
+    # per environment. A 127.x address means THIS POD, so the chart refuses to
+    # render it.
+    addr: "192.168.249.150:11682"
     connect_timeout_ms: 3000
 
   proxy:
@@ -205,15 +205,16 @@ config:
     max_fields: 64
 
   debug_payload:
-    # OFF by default: enabling logs full payload bytes (can include PAN / track2)
-    # to the pod logs. Turn on only for short debugging on non-retained logs.
-    enabled: false
+    # Matches the running config.toml (on). NOTE: this logs full payload bytes,
+    # which can include PAN / track2, to the pod logs. Set false to turn it off
+    # for shared or retained logs.
+    enabled: true
     max_bytes: 65536
 
   kafka:
     enabled: true
-    # REQUIRED when enabled. Comma-separated bootstrap servers.
-    brokers: ""
+    # Comma-separated bootstrap servers -- the value from the running config.toml.
+    brokers: "10.235.83.34:9092"
     topic: vp.fms.iso8583
     value_format: json
     # base64 (safe for binary ISO 8583) | hex (readable) | utf8 (text only)

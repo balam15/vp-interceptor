@@ -20,23 +20,24 @@ change (a `checksum/config` annotation on the pod template).
 
 ## Install
 
+The `config:` defaults in `values.yaml` mirror the running `config.toml` (FMS
+`192.168.249.150:11682`, Kafka `10.235.83.34:9092`), so a plain install
+reproduces the current config. Override per environment with `--set` or a
+values file.
+
 ```sh
 helm upgrade --install vp-fms-interceptor helm/vp-fms-interceptor \
-  --namespace vp-listener --create-namespace \
-  --set image.repository=image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor \
-  --set config.upstream.addr=fms.vp-listener.svc.cluster.local:8583 \
-  --set config.kafka.brokers=kafka.vp-listener.svc.cluster.local:9092
+  --namespace vp-listener --create-namespace
 ```
 
-Production (adds the prod overlay):
+Production (adds the prod overlay -- OCP registry, admin port off; config is
+inherited from values.yaml):
 
 ```sh
 helm upgrade --install vp-fms-interceptor helm/vp-fms-interceptor \
   --namespace vp-prod \
   -f helm/vp-fms-interceptor/values.yaml \
-  -f helm/vp-fms-interceptor/values-prod.yaml \
-  --set config.upstream.addr=fms.vp-prod.svc.cluster.local:8583 \
-  --set config.kafka.brokers=kafka-bootstrap.vp-prod.svc.cluster.local:9093
+  -f helm/vp-fms-interceptor/values-prod.yaml
 ```
 
 Then point VP at `vp-fms-interceptor.<namespace>.svc.cluster.local:9100`.
@@ -45,9 +46,7 @@ Validate before applying:
 
 ```sh
 helm lint helm/vp-fms-interceptor
-helm template vp-fms-interceptor helm/vp-fms-interceptor \
-  --set config.upstream.addr=fms.vp-listener.svc.cluster.local:8583 \
-  --set config.kafka.brokers=kafka.vp-listener.svc.cluster.local:9092
+helm template vp-fms-interceptor helm/vp-fms-interceptor
 helm test vp-fms-interceptor -n vp-listener
 ```
 
@@ -66,13 +65,14 @@ curl -u "$NEXUS_USER:$NEXUS_PASS" \
   --upload-file vp-fms-interceptor-1.0.0.tgz
 ```
 
-**2. Install** (mirrors the install pipeline's `--set globalImageTag`):
+**2. Install** (mirrors the install pipeline's `--set globalImageTag`; the
+running config.toml values are the chart defaults, so no values file is needed
+unless this environment differs):
 
 ```sh
 helm pull helm-hosted/vp-fms-interceptor --version 1.0.0 --untar
 helm upgrade --install vp-fms-interceptor vp-fms-interceptor \
   -n vp-listener --create-namespace \
-  -f vp-fms-interceptor/values/values-dc.yaml \
   --set globalImageTag=1.0.0-build.309
 ```
 
@@ -100,9 +100,9 @@ its knobs are `globalImageTag` and `replicaCount`.
 | --- | --- | --- |
 | `image.repository` / `image.tag` | `vp-fms-interceptor` / `""` (= appVersion) | pin a digest in prod |
 | `replicaCount` | `1` | single replica by design; connections never rebalance |
-| `config.upstream.addr` | `""` | **required** -- FMS endpoint, not loopback |
-| `config.kafka.enabled` / `config.kafka.brokers` | `true` / `""` | brokers **required** when enabled |
-| `config.debug_payload.enabled` | `false` | logs full payload (PAN!) when on |
+| `config.upstream.addr` | `192.168.249.150:11682` | FMS endpoint (from running config.toml); not loopback |
+| `config.kafka.enabled` / `config.kafka.brokers` | `true` / `10.235.83.34:9092` | from running config.toml |
+| `config.debug_payload.enabled` | `true` | matches running config.toml; logs full payload (PAN!) when on |
 | `service.exposeAdminPort` | `true` (dev) / `false` (prod) | admin port has no auth/TLS |
 | `autoscaling.enabled` / `podDisruptionBudget.enabled` | `false` / `false` | both off at one replica |
 
