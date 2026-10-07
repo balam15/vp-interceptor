@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "vp-fms-interceptor.fullname" . }}
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+spec:
+  # minAvailable must stay strictly below the replica count, or evictions block
+  # forever and a node drain hangs -- the validate helper enforces that. Disabled
+  # by default because this chart ships one replica, where no value is valid.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "vp-fms-interceptor.selectorLabels" . | nindent 6 }}
+{{- end }}

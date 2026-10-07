@@ -1,0 +1,71 @@
+# Production overlay for OpenShift. Layer it on top of values.yaml:
+#
+#   helm upgrade --install vp-fms-interceptor helm/vp-fms-interceptor \
+#     -f helm/vp-fms-interceptor/values.yaml \
+#     -f helm/vp-fms-interceptor/values-prod.yaml \
+#     --set config.upstream.addr=fms.vp-prod.svc.cluster.local:8583 \
+#     --set config.kafka.brokers=kafka-bootstrap.vp-prod.svc.cluster.local:9093
+#
+# CREDENTIALS DO NOT BELONG IN THIS FILE OR IN config.kafka.properties -- the
+# config is a committed ConfigMap. Mount Kafka client certs/keys from a Secret
+# via extraVolumes/extraVolumeMounts and reference the mounted paths.
+
+image:
+  # Override with the real registry path. Pin an immutable tag or digest.
+  repository: image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
+  pullPolicy: IfNotPresent
+
+# One pod, same as dev -- a second replica does not relieve the existing
+# long-lived VP connections.
+replicaCount: 1
+
+logLevel: info
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+
+topologySpreadConstraints: []
+
+service:
+  # Keep the unauthenticated admin port off the Service in prod. Reach /metrics
+  # with `oc port-forward`, or add a NetworkPolicy and turn this back on for
+  # Prometheus.
+  exposeAdminPort: false
+
+config:
+  upstream:
+    # REQUIRED -- set per environment.
+    addr: ""
+    connect_timeout_ms: 3000
+
+  debug_payload:
+    enabled: false
+    max_bytes: 65536
+
+  kafka:
+    enabled: true
+    # REQUIRED -- prod bootstrap servers (TLS listener port).
+    brokers: ""
+    topic: vp.fms.iso8583
+    properties:
+      # TLS to the broker, verified against the CA bundle already baked into the
+      # image (the runtime stage installs ca-certificates). For a private CA,
+      # mount it with extraVolumes/extraVolumeMounts and add
+      # "ssl.ca.location": "/etc/vp-fms/kafka-ca/ca.crt".
+      #
+      # Kafka TLS needs an image whose librdkafka was built with OpenSSL -- verify
+      # first (see rust-interceptor/deploy/README.md); otherwise the producer
+      # silently degrades to proxy-only mode.
+      "security.protocol": "SSL"

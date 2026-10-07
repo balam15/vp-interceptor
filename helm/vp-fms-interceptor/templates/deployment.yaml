@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vp-fms-interceptor.fullname" . }}
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- /* With an HPA on, `replicas` is omitted so `helm upgrade` does not reset
+         the count the HPA just chose and the two fight on a loop. */}}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "vp-fms-interceptor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # The process reads config.toml once at startup with no reload path, so
+        # without this a config-only `helm upgrade` would update the ConfigMap
+        # and leave every pod running the old settings.
+        checksum/config: {{ include "vp-fms-interceptor.configToml" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "vp-fms-interceptor.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "vp-fms-interceptor.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        # No runAsUser and no fsGroup on purpose: OpenShift's restricted-v2 SCC
+        # assigns a UID from the namespace range, and the image is arbitrary-UID
+        # safe (static binary, world-readable config, nothing written to disk).
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: interceptor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The image ENTRYPOINT is the binary; argv[1] is the config path. Keep
+          # a path here or the process falls back to ./config.toml and exits.
+          args:
+            - /etc/vp-fms/config.toml
+          ports:
+            - name: tcp-vp
+              containerPort: {{ include "vp-fms-interceptor.listenPort" . | int }}
+              protocol: TCP
+            - name: http-admin
+              containerPort: {{ include "vp-fms-interceptor.adminPort" . | int }}
+              protocol: TCP
+          env:
+            # RUST_LOG is the only environment variable the binary reads. Accepts
+            # tracing-subscriber filter syntax, e.g. "info,vp_fms_interceptor=debug".
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+          {{- /* EVERY PROBE HITS THE ADMIN PORT, NEVER THE DATA PORT. A probe on
+                 9100 opens and immediately drops a real FMS connection on every
+                 interval (the proxy dials FMS as soon as it accepts), inflating
+                 upstream_connect_failed. A process that is alive at all has 9100
+                 bound, so probing 9101 loses nothing. */}}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http-admin
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            preStop:
+              # Endpoint removal is asynchronous; this pause stops VP being handed
+              # a pod that has already begun draining.
+              exec:
+                command: ["sleep", {{ .Values.preStopSleepSeconds | quote }}]
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The process opens exactly one file (the config) and writes nothing;
+            # logs go to stdout.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vp-fms
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "vp-fms-interceptor.configMapName" . }}
+            # 0444, not tighter: a ConfigMap volume is owned by root and the
+            # container runs as an arbitrary non-root UID from the namespace
+            # range, so a tighter mode would make the config unreadable and the
+            # process would exit at startup.
+            defaultMode: 0444
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

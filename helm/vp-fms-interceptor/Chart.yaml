@@ -1,0 +1,23 @@
+apiVersion: v2
+name: vp-fms-interceptor
+description: VP -> FMS ISO 8583 TCP interceptor that tees traffic to Kafka
+type: application
+
+# Bump on every chart change.
+version: 1.0.0
+# Version of the vp-fms-interceptor binary this chart deploys. Used as the image
+# tag when image.tag is empty, so keep it in step with rust-interceptor/Cargo.toml.
+appVersion: "0.1.0"
+
+# HPA uses autoscaling/v2 and the PDB uses policy/v1; both need Kubernetes 1.23+.
+kubeVersion: ">=1.23.0-0"
+
+keywords:
+  - iso8583
+  - tcp-proxy
+  - kafka
+  - openshift
+sources:
+  - https://github.com/balam15/vp-interceptor
+maintainers:
+  - name: VP Listener team

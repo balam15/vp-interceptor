@@ -1,0 +1,32 @@
+{{- if .Values.service.exposeAdminPort }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "vp-fms-interceptor.fullname" . }}-test-healthz
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+  annotations:
+    # `helm test <release>` runs this pod; it is deleted after it succeeds.
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  # Reuse the app image: its Alpine base ships busybox wget, so no extra pull.
+  containers:
+    - name: healthz
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      command: ["wget"]
+      args:
+        - "-qO-"
+        - "http://{{ include "vp-fms-interceptor.fullname" . }}:{{ include "vp-fms-interceptor.adminPort" . }}/healthz"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        capabilities:
+          drop:
+            - ALL
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+{{- end }}

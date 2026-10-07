@@ -1,0 +1,23 @@
+{{- include "vp-fms-interceptor.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vp-fms-interceptor.configMapName" . }}
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+data:
+  # Mounted at /etc/vp-fms/config.toml and passed to the binary as argv[1]. The
+  # process reads exactly one TOML file and has no env-var overrides.
+  #
+  # A ConfigMap, not a Secret: the shipped config carries no credentials, so it
+  # is kept here where it is plainly inspectable (`oc get configmap
+  # {{ include "vp-fms-interceptor.configMapName" . }} -o yaml`).
+  #
+  # WATCH OUT: a ConfigMap is stored unencrypted in etcd and is readable by
+  # anyone with `get configmaps` in this namespace. The only place credentials
+  # can appear in this file is [kafka.properties] (SASL username/password, TLS
+  # keys). If you ever need those, do NOT put them here -- mount them from a
+  # Secret via extraVolumes/extraVolumeMounts and reference the mounted path
+  # from config.kafka.properties (e.g. ssl.key.location).
+  config.toml: |
+    {{- include "vp-fms-interceptor.configToml" . | nindent 4 }}

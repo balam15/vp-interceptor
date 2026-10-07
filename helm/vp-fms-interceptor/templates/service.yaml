@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vp-fms-interceptor.fullname" . }}
+  labels:
+    {{- include "vp-fms-interceptor.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  # No sessionAffinity: a TCP connection stays pinned to the pod that accepted it
+  # for its whole lifetime, so there is nothing for affinity to add.
+  selector:
+    {{- include "vp-fms-interceptor.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: tcp-vp
+      port: {{ include "vp-fms-interceptor.listenPort" . | int }}
+      targetPort: tcp-vp
+      protocol: TCP
+    {{- if .Values.service.exposeAdminPort }}
+    # NO AUTH AND NO TLS on this port. With no NetworkPolicy it is reachable from
+    # anywhere in the cluster. Set service.exposeAdminPort=false to keep it
+    # pod-only and reach it with `oc port-forward` instead.
+    - name: http-admin
+      port: {{ include "vp-fms-interceptor.adminPort" . | int }}
+      targetPort: http-admin
+      protocol: TCP
+    {{- end }}

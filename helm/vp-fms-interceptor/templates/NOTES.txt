@@ -1,0 +1,61 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} deployed as {{ include "vp-fms-interceptor.fullname" . }}.
+
+POINT VP AT THIS ADDRESS
+  {{ include "vp-fms-interceptor.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ include "vp-fms-interceptor.listenPort" . }}
+
+TRAFFIC PATH
+  VP -> :{{ include "vp-fms-interceptor.listenPort" . }} -> {{ .Values.config.upstream.addr }} (FMS)
+{{- if .Values.config.kafka.enabled }}
+  tee -> {{ .Values.config.kafka.brokers }} topic {{ .Values.config.kafka.topic }}
+{{- else }}
+  tee -> DISABLED (proxy-only; nothing is published to Kafka)
+{{- end }}
+
+CONFIG
+  config.toml lives in ConfigMap {{ include "vp-fms-interceptor.configMapName" . }},
+  mounted read-only at /etc/vp-fms/config.toml. Change it by editing values and
+  running `helm upgrade` -- the pods roll automatically on a config change.
+
+CHECK IT CAME UP
+  oc rollout status deployment/{{ include "vp-fms-interceptor.fullname" . }} -n {{ .Release.Namespace }}
+  oc logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} --tail=20
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+  Expect an "interceptor ready" log line. CrashLoopBackOff means the config
+  failed to parse -- the log names the offending key.
+
+METRICS AND HEALTH
+{{- if .Values.service.exposeAdminPort }}
+  oc port-forward -n {{ .Release.Namespace }} svc/{{ include "vp-fms-interceptor.fullname" . }} {{ include "vp-fms-interceptor.adminPort" . }}:{{ include "vp-fms-interceptor.adminPort" . }}
+{{- else }}
+  oc port-forward -n {{ .Release.Namespace }} deploy/{{ include "vp-fms-interceptor.fullname" . }} {{ include "vp-fms-interceptor.adminPort" . }}:{{ include "vp-fms-interceptor.adminPort" . }}
+{{- end }}
+  curl -s localhost:{{ include "vp-fms-interceptor.adminPort" . }}/healthz
+  curl -s localhost:{{ include "vp-fms-interceptor.adminPort" . }}/metrics | grep vp_interceptor_
+
+WHAT THE PROBES WILL NOT TELL YOU
+  /healthz stays green while FMS is unreachable and while Kafka is down -- a dead
+  dependency must not cascade into pod restarts. Alert on these counters instead:
+    vp_interceptor_upstream_connect_failed   FMS refusing or timing out
+    vp_interceptor_kafka_delivery_failed     broker rejecting or unreachable
+    vp_interceptor_tee_dropped               tee queue full, frames lost
+    vp_interceptor_framer_desyncs            framing config does not match the wire
+{{- if .Values.config.debug_payload.enabled }}
+
+WARNING: config.debug_payload.enabled is true. Full payload bytes -- which can
+include PAN / track2 data -- are written to the pod logs. Turn it off after
+debugging in shared or retained logs.
+{{- end }}
+{{- if .Values.service.exposeAdminPort }}
+
+NOTE: port {{ include "vp-fms-interceptor.adminPort" . }} is on the Service with NO AUTH AND NO TLS. With no
+NetworkPolicy it is reachable from anywhere in the cluster. Set
+service.exposeAdminPort=false to make it pod-only.
+{{- end }}
+{{- if eq (int .Values.replicaCount) 1 }}
+
+NOTE: one replica. A `helm upgrade` rolls without a gap (the new pod is Ready
+before the old one is signalled), but there is no redundancy against an
+involuntary disruption (node failure, eviction, OOMKill) -- that is an outage on
+the VP->FMS path until the pod is rescheduled.
+{{- end }}
