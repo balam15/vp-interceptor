@@ -11,13 +11,19 @@
 #   ordinary camelCase.
 
 # ----------------------------------------------------------------------- image
+# Platform-wide image tag. The install pipeline sets this with
+# `--set globalImageTag=<build>` (e.g. 1.0.0-build.309). image.tag overrides it
+# when set; otherwise this, then .Chart.AppVersion, is used. Kept at the top
+# level so it survives `helm upgrade --reuse-values` and a later
+# `--set globalImageTag=<newbuild>` bumps the tag without touching anything else.
+globalImageTag: ""
+
 image:
   # Full registry path, e.g.
   #   image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
   repository: vp-fms-interceptor
-  # Empty means "use .Chart.AppVersion". Pin an immutable tag or a digest in
-  # prod -- this sits inline on an authorization path, so rollbacks must be
-  # reproducible.
+  # Empty defers to globalImageTag, then .Chart.AppVersion. Set this to pin an
+  # immutable tag or digest for one release regardless of globalImageTag.
   tag: ""
   pullPolicy: IfNotPresent
 

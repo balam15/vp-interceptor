@@ -51,6 +51,49 @@ helm template vp-fms-interceptor helm/vp-fms-interceptor \
 helm test vp-fms-interceptor -n vp-listener
 ```
 
+## Packaging and deploying via Nexus (the pipeline flow)
+
+The deployment pipelines `helm pull` a versioned chart from the Nexus
+`helm-hosted` repo, then `helm install` / `helm upgrade` it. To make this chart
+fit that flow:
+
+**1. Package and push to Nexus** (chart version = the `helmTag` the pipeline pulls):
+
+```sh
+helm package helm/vp-fms-interceptor            # -> vp-fms-interceptor-1.0.0.tgz
+curl -u "$NEXUS_USER:$NEXUS_PASS" \
+  http://repopd.maybank.co.id:8081/repository/helm-hosted/ \
+  --upload-file vp-fms-interceptor-1.0.0.tgz
+```
+
+**2. Install** (mirrors the install pipeline's `--set globalImageTag`):
+
+```sh
+helm pull helm-hosted/vp-fms-interceptor --version 1.0.0 --untar
+helm upgrade --install vp-fms-interceptor vp-fms-interceptor \
+  -n vp-listener --create-namespace \
+  -f vp-fms-interceptor/values/values-dc.yaml \
+  --set globalImageTag=1.0.0-build.309
+```
+
+**3. Upgrade** (mirrors the upgrade pipeline's `--reuse-values --set ...`):
+
+```sh
+helm pull helm-hosted/vp-fms-interceptor --version 1.0.1 --untar
+helm upgrade vp-fms-interceptor vp-fms-interceptor \
+  -n vp-listener --reuse-values \
+  --set globalImageTag=1.0.0-build.312 \
+  --set replicaCount=1
+```
+
+`globalImageTag` is a top-level value (see `values.yaml`), so `--reuse-values`
+keeps every other setting and a single `--set globalImageTag=<build>` rolls the
+new image. `image.tag` overrides `globalImageTag` when you need to pin one
+release. The big `vynamic-payments-maybank` chart's per-assembly keys
+(`images.<assembly>.imagetag`, `assembly.<assembly>.replicacountBlue`,
+`init_database`, blue/green) do not apply here -- this is a single service, so
+its knobs are `globalImageTag` and `replicaCount`.
+
 ## Key values
 
 | key | default | notes |

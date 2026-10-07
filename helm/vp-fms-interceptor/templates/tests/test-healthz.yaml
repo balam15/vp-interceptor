@@ -14,7 +14,7 @@ spec:
   # Reuse the app image: its Alpine base ships busybox wget, so no extra pull.
   containers:
     - name: healthz
-      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      image: {{ include "vp-fms-interceptor.image" . | quote }}
       command: ["wget"]
       args:
         - "-qO-"

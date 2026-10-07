@@ -62,6 +62,19 @@ Name of the ConfigMap that holds config.toml.
 {{- end -}}
 
 {{/*
+Full image reference. Tag precedence, highest first:
+  image.tag        -- an explicit per-release pin
+  globalImageTag   -- the platform-wide tag the install pipeline sets with
+                      `--set globalImageTag=<build>`
+  .Chart.AppVersion
+Rendered in one place so the Deployment and the helm test never disagree.
+*/}}
+{{- define "vp-fms-interceptor.image" -}}
+{{- $tag := .Values.image.tag | default .Values.globalImageTag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
+
+{{/*
 Pull the port out of a "host:port" address, so the container ports, the Service
 and the probes are all derived from the same values the process actually binds
 and cannot drift apart.
