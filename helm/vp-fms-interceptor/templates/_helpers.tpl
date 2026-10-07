@@ -186,16 +186,16 @@ enabled = {{ $c.timing.enabled }}
 pair_request_response = {{ $c.timing.pair_request_response }}
 max_pending = {{ $c.timing.max_pending | int }}
 
+[debug_payload]
+enabled = {{ $c.debug_payload.enabled }}
+max_bytes = {{ $c.debug_payload.max_bytes | int }}
+
 [parse]
 mode = {{ $c.parse.mode | quote }}
 pair_delimiter = {{ $c.parse.pair_delimiter | quote }}
 kv_delimiter = {{ $c.parse.kv_delimiter | quote }}
 trim = {{ $c.parse.trim }}
 max_fields = {{ $c.parse.max_fields | int }}
-
-[debug_payload]
-enabled = {{ $c.debug_payload.enabled }}
-max_bytes = {{ $c.debug_payload.max_bytes | int }}
 
 [kafka]
 enabled = {{ $c.kafka.enabled }}

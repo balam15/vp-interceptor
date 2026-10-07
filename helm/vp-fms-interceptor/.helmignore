@@ -6,6 +6,3 @@
 *.swp
 *.bak
 *.orig
-ci/
-tests/
-README.md
