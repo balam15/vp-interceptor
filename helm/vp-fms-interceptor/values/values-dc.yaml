@@ -11,9 +11,11 @@
 # image for this cluster (confirm before deploying).
 
 image:
-  # CONFIRM THIS. The OCP internal registry path is the usual in-cluster pull
-  # source; change it if the image lives in Nexus or elsewhere.
-  repository: image-registry.openshift-image-registry.svc:5000/vp-listener/vp-fms-interceptor
+  # The image built and pushed by the Listener_VP Jenkins job to the Nexus
+  # registry (build #23 -> repouat.maybank.co.id:8082/vp-fms-interceptor:rust-1.0.0).
+  repository: repouat.maybank.co.id:8082/vp-fms-interceptor
+  # The tag Jenkins pushed. Override at deploy time with --set globalImageTag=<tag>.
+  tag: "rust-1.0.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
