@@ -9,8 +9,12 @@ version: 1.0.0
 # tag when image.tag is empty, so keep it in step with rust-interceptor/Cargo.toml.
 appVersion: "0.1.0"
 
-# HPA uses autoscaling/v2 and the PDB uses policy/v1; both need Kubernetes 1.23+.
-kubeVersion: ">=1.23.0-0"
+# The objects deployed by default (ConfigMap, Deployment apps/v1, Service,
+# ServiceAccount) work on old clusters, so the floor is low. Only the OPTIONAL
+# add-ons need newer APIs -- enable them on a matching cluster:
+#   autoscaling.enabled      -> HorizontalPodAutoscaler autoscaling/v2 (k8s 1.23+)
+#   podDisruptionBudget.enabled -> PodDisruptionBudget policy/v1       (k8s 1.21+)
+kubeVersion: ">=1.19.0-0"
 
 keywords:
   - iso8583
